@@ -1,0 +1,38 @@
+name = "team-agents"
+main = "worker/index.ts"
+compatibility_date = "2026-07-26"
+compatibility_flags = ["nodejs_compat"]
+
+[assets]
+directory = "dist/client"
+binding = "ASSETS"
+run_worker_first = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "team-agents-db"
+database_id = "00000000-0000-4000-8000-000000000000"
+migrations_dir = "drizzle"
+
+[[durable_objects.bindings]]
+name = "CHANNEL_ROOMS"
+class_name = "ChannelRoom"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ChannelRoom"]
+
+[[queues.producers]]
+binding = "AGENT_TASKS"
+queue = "team-agents-agent-tasks"
+
+[[queues.consumers]]
+queue = "team-agents-agent-tasks"
+max_batch_size = 1
+max_batch_timeout = 1
+max_retries = 5
+dead_letter_queue = "team-agents-agent-tasks-dlq"
+max_concurrency = 8
+
+[vars]
+ENVIRONMENT = "production"
