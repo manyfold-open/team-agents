@@ -6,7 +6,7 @@ compatibility_flags = ["nodejs_compat"]
 [assets]
 directory = "dist/client"
 binding = "ASSETS"
-run_worker_first = true
+run_worker_first = ["/api/*", "/_vinext/image"]
 
 [[d1_databases]]
 binding = "DB"

@@ -38,14 +38,55 @@ await eventually("Anonymous bootstrap", async () => {
   assert.equal(body.authenticated, false);
 });
 
-await eventually("Application shell", async () => {
+const shellHtml = await eventually("Application shell", async () => {
   const response = await fetch(baseUrl, {
     headers: { accept: "text/html" },
   });
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
   assert.equal(response.headers.get("x-frame-options"), "DENY");
-  assert.match(await response.text(), /Team Agents/i);
+  const html = await response.text();
+  assert.match(html, /Team Agents/i);
+  return html;
+});
+
+const clientAssetPaths = [
+  ...new Set(
+    [...shellHtml.matchAll(/\b(?:href|src)=["']([^"']+)["']/gi)]
+      .map((match) => match[1])
+      .filter((path) => /^\/assets\/.+\.(?:css|js)$/i.test(path)),
+  ),
+];
+
+assert.ok(
+  clientAssetPaths.some((path) => path.endsWith(".js")),
+  "Application shell must reference at least one JavaScript asset",
+);
+assert.ok(
+  clientAssetPaths.some((path) => path.endsWith(".css")),
+  "Application shell must reference at least one CSS asset",
+);
+
+await eventually("Browser client assets", async () => {
+  await Promise.all(
+    clientAssetPaths.map(async (path) => {
+      const response = await fetch(new URL(path, baseUrl));
+      assert.equal(response.status, 200, `${path} returned ${response.status}`);
+
+      const contentType = response.headers.get("content-type") ?? "";
+      if (path.endsWith(".js")) {
+        assert.match(contentType, /javascript/i, `${path} has content-type ${contentType}`);
+      } else {
+        assert.match(contentType, /^text\/css\b/i, `${path} has content-type ${contentType}`);
+      }
+
+      assert.ok(
+        Number(response.headers.get("content-length") ?? 0) > 0
+          || (await response.arrayBuffer()).byteLength > 0,
+        `${path} is empty`,
+      );
+    }),
+  );
 });
 
 console.log(`Team Agents smoke test passed: ${baseUrl}`);
