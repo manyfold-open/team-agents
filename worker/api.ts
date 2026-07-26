@@ -45,60 +45,60 @@ export async function handleApiRequest(
       return json({ ok: true, service: "team-agents", time: new Date().toISOString() });
     }
     if (url.pathname === "/api/auth/register" && request.method === "POST") {
-      return register(request, env);
+      return await register(request, env);
     }
     if (url.pathname === "/api/auth/login" && request.method === "POST") {
-      return login(request, env);
+      return await login(request, env);
     }
     if (url.pathname === "/api/auth/logout" && request.method === "POST") {
       return json({ ok: true }, 200, { "set-cookie": await deleteSession(request, env) });
     }
     if (url.pathname === "/api/auth/change-password" && request.method === "POST") {
-      return changePassword(request, env);
+      return await changePassword(request, env);
     }
     if (url.pathname === "/api/bootstrap" && request.method === "GET") {
-      return bootstrap(request, env);
+      return await bootstrap(request, env);
     }
     if (url.pathname === "/api/channels" && request.method === "POST") {
-      return createChannel(request, env);
+      return await createChannel(request, env);
     }
     if (url.pathname === "/api/agents" && request.method === "GET") {
-      return listAgents(request, env);
+      return await listAgents(request, env);
     }
     if (url.pathname === "/api/agents" && request.method === "POST") {
-      return createAgent(request, env);
+      return await createAgent(request, env);
     }
 
     const channelMessages = url.pathname.match(/^\/api\/channels\/([^/]+)\/messages$/);
     if (channelMessages && request.method === "GET") {
-      return getMessages(request, env, decodeURIComponent(channelMessages[1]));
+      return await getMessages(request, env, decodeURIComponent(channelMessages[1]));
     }
     if (channelMessages && request.method === "POST") {
-      return createMessage(request, env, decodeURIComponent(channelMessages[1]));
+      return await createMessage(request, env, decodeURIComponent(channelMessages[1]));
     }
     const channelRoster = url.pathname.match(/^\/api\/channels\/([^/]+)\/roster$/);
     if (channelRoster && request.method === "GET") {
-      return getRoster(request, env, decodeURIComponent(channelRoster[1]));
+      return await getRoster(request, env, decodeURIComponent(channelRoster[1]));
     }
     const channelJoin = url.pathname.match(/^\/api\/channels\/([^/]+)\/join$/);
     if (channelJoin && request.method === "POST") {
-      return joinChannel(request, env, decodeURIComponent(channelJoin[1]));
+      return await joinChannel(request, env, decodeURIComponent(channelJoin[1]));
     }
     const channelInvite = url.pathname.match(/^\/api\/channels\/([^/]+)\/invite$/);
     if (channelInvite && request.method === "POST") {
-      return inviteToChannel(request, env, decodeURIComponent(channelInvite[1]));
+      return await inviteToChannel(request, env, decodeURIComponent(channelInvite[1]));
     }
     const channelRead = url.pathname.match(/^\/api\/channels\/([^/]+)\/read$/);
     if (channelRead && request.method === "POST") {
-      return markRead(request, env, decodeURIComponent(channelRead[1]));
+      return await markRead(request, env, decodeURIComponent(channelRead[1]));
     }
     const channelStream = url.pathname.match(/^\/api\/channels\/([^/]+)\/stream$/);
     if (channelStream && request.method === "GET") {
-      return connectChannel(request, env, decodeURIComponent(channelStream[1]));
+      return await connectChannel(request, env, decodeURIComponent(channelStream[1]));
     }
     const channelAgent = url.pathname.match(/^\/api\/channels\/([^/]+)\/agents\/([^/]+)$/);
     if (channelAgent && request.method === "POST") {
-      return addAgentToChannel(
+      return await addAgentToChannel(
         request,
         env,
         decodeURIComponent(channelAgent[1]),
@@ -106,7 +106,7 @@ export async function handleApiRequest(
       );
     }
     if (channelAgent && request.method === "DELETE") {
-      return removeAgentFromChannel(
+      return await removeAgentFromChannel(
         request,
         env,
         decodeURIComponent(channelAgent[1]),
@@ -115,7 +115,7 @@ export async function handleApiRequest(
     }
     const resetAgent = url.pathname.match(/^\/api\/channels\/([^/]+)\/agents\/([^/]+)\/reset$/);
     if (resetAgent && request.method === "POST") {
-      return resetAgentContext(
+      return await resetAgentContext(
         request,
         env,
         decodeURIComponent(resetAgent[1]),
@@ -124,18 +124,23 @@ export async function handleApiRequest(
     }
     const reaction = url.pathname.match(/^\/api\/messages\/(\d+)\/reactions$/);
     if (reaction && request.method === "POST") {
-      return toggleReaction(request, env, Number(reaction[1]));
+      return await toggleReaction(request, env, Number(reaction[1]));
     }
     const agent = url.pathname.match(/^\/api\/agents\/([^/]+)$/);
     if (agent && request.method === "PATCH") {
-      return updateAgent(request, env, decodeURIComponent(agent[1]));
+      return await updateAgent(request, env, decodeURIComponent(agent[1]));
     }
     if (agent && request.method === "DELETE") {
-      return removeAgent(request, env, decodeURIComponent(agent[1]));
+      return await removeAgent(request, env, decodeURIComponent(agent[1]));
     }
     const runAction = url.pathname.match(/^\/api\/agent-runs\/([^/]+)\/(cancel|retry)$/);
     if (runAction && request.method === "POST") {
-      return actOnRun(request, env, decodeURIComponent(runAction[1]), runAction[2] as "cancel" | "retry");
+      return await actOnRun(
+        request,
+        env,
+        decodeURIComponent(runAction[1]),
+        runAction[2] as "cancel" | "retry",
+      );
     }
     return json({ error: { code: "not_found", message: "API route not found." } }, 404);
   } catch (error) {

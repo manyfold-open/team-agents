@@ -38,6 +38,27 @@ await eventually("Anonymous bootstrap", async () => {
   assert.equal(body.authenticated, false);
 });
 
+await eventually("Authentication error contract", async () => {
+  for (const action of ["register", "login"]) {
+    const response = await fetch(`${baseUrl}/api/auth/${action}`, {
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        "content-type": "application/json",
+        origin: new URL(baseUrl).origin,
+      },
+      body: JSON.stringify({
+        username: "x",
+        password: "diagnostic-only-password",
+      }),
+    });
+    assert.equal(response.status, 400, `${action} returned ${response.status}`);
+    assert.match(response.headers.get("content-type") ?? "", /^application\/json\b/i);
+    const body = await response.json();
+    assert.equal(body.error?.code, "invalid_username");
+  }
+});
+
 const shellHtml = await eventually("Application shell", async () => {
   const response = await fetch(baseUrl, {
     headers: { accept: "text/html" },

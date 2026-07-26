@@ -106,6 +106,7 @@ const copy = {
     login: "登录",
     register: "创建账号",
     username: "用户名",
+    usernameHint: "3–32 个字符；支持文字、数字、点、下划线和连字符。",
     password: "密码",
     noAccount: "还没有账号？",
     haveAccount: "已经有账号？",
@@ -179,6 +180,7 @@ const copy = {
     login: "Sign in",
     register: "Create account",
     username: "Username",
+    usernameHint: "3–32 characters: letters, numbers, dots, underscores, or hyphens.",
     password: "Password",
     noAccount: "New to Team Agents?",
     haveAccount: "Already have an account?",
@@ -809,7 +811,17 @@ function AuthScreen(props: {
           </p>
           <label>
             <span>{t.username}</span>
-            <input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" required />
+            <input
+              value={username}
+              onChange={(event) => setUsername(event.target.value)}
+              autoComplete="username"
+              minLength={3}
+              maxLength={32}
+              aria-describedby="auth-username-hint"
+              spellCheck={false}
+              required
+            />
+            <small id="auth-username-hint" className="field-hint">{t.usernameHint}</small>
           </label>
           <label>
             <span>{t.password}</span>
