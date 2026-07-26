@@ -1,10 +1,16 @@
+import { scrypt } from "node:crypto";
 import type { AuthUser, Env } from "./types";
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 const SESSION_COOKIE = "team_agents_session";
 const SESSION_DAYS = 30;
-export const PASSWORD_ITERATIONS = 600_000;
+const SCRYPT_PREFIX = "scrypt-v1";
+const SCRYPT_KEY_LENGTH = 32;
+const SCRYPT_MAX_MEMORY = 64 * 1024 * 1024;
+export const PASSWORD_SCRYPT_N = 1 << 15;
+export const PASSWORD_SCRYPT_R = 8;
+export const PASSWORD_SCRYPT_P = 3;
 
 export class HttpError extends Error {
   constructor(
@@ -116,11 +122,11 @@ export function validatePassword(value: unknown): string {
   return value;
 }
 
-export async function hashPassword(
+async function derivePbkdf2(
   password: string,
-  salt: Uint8Array<ArrayBufferLike> = crypto.getRandomValues(new Uint8Array(16)),
-  iterations = PASSWORD_ITERATIONS,
-): Promise<{ hash: string; salt: string; iterations: number }> {
+  salt: Uint8Array<ArrayBufferLike>,
+  iterations: number,
+): Promise<Uint8Array> {
   const key = await crypto.subtle.importKey(
     "raw",
     textEncoder.encode(password),
@@ -133,10 +139,54 @@ export async function hashPassword(
     key,
     256,
   );
+  return new Uint8Array(bits);
+}
+
+async function deriveScrypt(
+  password: string,
+  salt: Uint8Array<ArrayBufferLike>,
+  n: number,
+  r: number,
+  p: number,
+): Promise<Uint8Array> {
+  return new Promise((resolve, reject) => {
+    scrypt(
+      password,
+      salt,
+      SCRYPT_KEY_LENGTH,
+      { N: n, r, p, maxmem: SCRYPT_MAX_MEMORY },
+      (error, derivedKey) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(new Uint8Array(derivedKey));
+      },
+    );
+  });
+}
+
+export async function hashPassword(
+  password: string,
+  salt: Uint8Array<ArrayBufferLike> = crypto.getRandomValues(new Uint8Array(16)),
+): Promise<{ hash: string; salt: string; iterations: number }> {
+  const derived = await deriveScrypt(
+    password,
+    salt,
+    PASSWORD_SCRYPT_N,
+    PASSWORD_SCRYPT_R,
+    PASSWORD_SCRYPT_P,
+  );
   return {
-    hash: bytesToBase64Url(new Uint8Array(bits)),
+    hash: [
+      SCRYPT_PREFIX,
+      PASSWORD_SCRYPT_N,
+      PASSWORD_SCRYPT_R,
+      PASSWORD_SCRYPT_P,
+      bytesToBase64Url(derived),
+    ].join("$"),
     salt: bytesToBase64Url(salt),
-    iterations,
+    iterations: PASSWORD_SCRYPT_N,
   };
 }
 
@@ -146,9 +196,38 @@ export async function verifyPassword(
   salt: string,
   iterations: number,
 ): Promise<boolean> {
-  const derived = await hashPassword(password, base64UrlToBytes(salt), iterations);
+  let derivedHash: string;
+  const scryptMatch = expectedHash.match(/^scrypt-v1\$(\d+)\$(\d+)\$(\d+)\$([A-Za-z0-9_-]+)$/);
+  if (scryptMatch) {
+    const [, nText, rText, pText, encodedHash] = scryptMatch;
+    const n = Number(nText);
+    const r = Number(rText);
+    const p = Number(pText);
+    const cost = n * r * p;
+    if (
+      !Number.isSafeInteger(n)
+      || !Number.isSafeInteger(r)
+      || !Number.isSafeInteger(p)
+      || n < 2
+      || (n & (n - 1)) !== 0
+      || r < 1
+      || p < 1
+      || cost > 1 << 20
+    ) {
+      return false;
+    }
+    const derived = await deriveScrypt(password, base64UrlToBytes(salt), n, r, p);
+    derivedHash = bytesToBase64Url(derived);
+    expectedHash = encodedHash;
+  } else {
+    if (!Number.isSafeInteger(iterations) || iterations < 1 || iterations > 100_000) {
+      return false;
+    }
+    const derived = await derivePbkdf2(password, base64UrlToBytes(salt), iterations);
+    derivedHash = bytesToBase64Url(derived);
+  }
   const [left, right] = await Promise.all([
-    sha256Bytes(derived.hash),
+    sha256Bytes(derivedHash),
     sha256Bytes(expectedHash),
   ]);
   let difference = left.length ^ right.length;

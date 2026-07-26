@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
-  PASSWORD_ITERATIONS,
+  PASSWORD_SCRYPT_N,
+  PASSWORD_SCRYPT_P,
+  PASSWORD_SCRYPT_R,
   hashPassword,
   normalizeUsername,
   redactSecret,
@@ -13,12 +15,14 @@ describe("authentication primitives", () => {
     expect(normalizeUsername("  Alice.Example ")).toBe("alice.example");
   });
 
-  it("uses the configured PBKDF2 work factor and a unique salt", async () => {
+  it("uses the configured scrypt work factor and a unique salt", async () => {
     const first = await hashPassword("correct horse battery staple");
     const second = await hashPassword("correct horse battery staple");
 
-    expect(first.iterations).toBe(PASSWORD_ITERATIONS);
-    expect(first.iterations).toBe(600_000);
+    expect(first.iterations).toBe(PASSWORD_SCRYPT_N);
+    expect(first.hash).toMatch(
+      new RegExp(`^scrypt-v1\\$${PASSWORD_SCRYPT_N}\\$${PASSWORD_SCRYPT_R}\\$${PASSWORD_SCRYPT_P}\\$`),
+    );
     expect(first.salt).not.toBe(second.salt);
     expect(first.hash).not.toBe(second.hash);
     await expect(
@@ -26,6 +30,20 @@ describe("authentication primitives", () => {
     ).resolves.toBe(true);
     await expect(
       verifyPassword("wrong password", first.hash, first.salt, first.iterations),
+    ).resolves.toBe(false);
+  });
+
+  it("rejects unsupported or excessive password work factors without running them", async () => {
+    await expect(
+      verifyPassword("password", "legacy-hash", "c2FsdA", 600_000),
+    ).resolves.toBe(false);
+    await expect(
+      verifyPassword(
+        "password",
+        "scrypt-v1$65536$8$3$encoded",
+        "c2FsdA",
+        65_536,
+      ),
     ).resolves.toBe(false);
   });
 });

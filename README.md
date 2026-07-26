@@ -17,7 +17,7 @@ Team Agents 是一个面向人类与 A2A Agent 的频道协作应用。它采用
 - Cloudflare Worker + D1
 - 每频道一个 `ChannelRoom` Durable Object，使用可休眠 WebSocket
 - `AGENT_TASKS` Queue 与 dead-letter queue
-- PBKDF2-HMAC-SHA256（600,000 次）密码哈希
+- scrypt（N=32768、r=8、p=3）密码哈希，保留旧 PBKDF2 记录的安全兼容校验
 - AES-256-GCM Agent token 加密；API 永不回显 token
 
 主要目录：
