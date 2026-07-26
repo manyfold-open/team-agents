@@ -1087,7 +1087,7 @@ function JoinChannel({ channel, locale, onJoin }: { channel: Channel; locale: Lo
 function ModalShell(props: { title: string; subtitle?: string; onClose: () => void; children: React.ReactNode; wide?: boolean }) {
   return (
     <div className="modal-layer">
-      <button className="modal-backdrop" onClick={props.onClose} aria-label="Close" />
+      <button className="modal-scrim" onClick={props.onClose} aria-label="Close" />
       <section className={`modal-card ${props.wide ? "wide" : ""}`}>
         <header>
           <div><h2>{props.title}</h2>{props.subtitle && <p>{props.subtitle}</p>}</div>
