@@ -159,6 +159,26 @@ export const SCHEMA_STATEMENTS = [
     count INTEGER NOT NULL,
     blocked_until TEXT
   )`,
+  // Holds an in-flight Manyfold A2A connect handshake. The device code is the
+  // only credential that can redeem the minted agent tokens, so it is stored
+  // encrypted and never leaves the worker.
+  `CREATE TABLE IF NOT EXISTS manyfold_connect_sessions (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    user_code TEXT NOT NULL,
+    auth_url TEXT NOT NULL,
+    device_code_ciphertext TEXT NOT NULL,
+    device_code_iv TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending'
+      CHECK(status IN ('pending','exchanged','expired','denied')),
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS manyfold_connect_user_idx
+    ON manyfold_connect_sessions(user_id, status)`,
+  `CREATE INDEX IF NOT EXISTS manyfold_connect_expiry_idx
+    ON manyfold_connect_sessions(expires_at)`,
 ] as const;
 
 let initialized: Promise<void> | null = null;

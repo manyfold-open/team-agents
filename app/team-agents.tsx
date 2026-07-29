@@ -7,6 +7,7 @@ import {
   ChevronDown,
   CirclePlus,
   Download,
+  ExternalLink,
   Globe2,
   Hash,
   Languages,
@@ -149,6 +150,20 @@ const copy = {
     send: "发送",
     noMessages: "这里还很安静。发出第一条消息，或 @ 一个 Agent 开始协作。",
     addAgent: "连接新 Agent",
+    connectManyfold: "从 Manyfold 连接",
+    connectManyfoldHint: "在 Manyfold 上勾选账号下的 Agent，地址和 token 自动带回，无需复制粘贴。",
+    connectOpening: "正在打开授权页…",
+    connectWaiting: "等待你在 Manyfold 上完成授权…",
+    connectCodeLabel: "核对确认码",
+    connectCodeHint: "Manyfold 授权页上显示的码应与这里一致；不一致就不要授权。",
+    connectReopen: "重新打开授权页",
+    connectCancel: "取消",
+    connectDenied: "授权被拒绝。",
+    connectExpired: "授权会话已过期，请重新发起。",
+    connectPopupBlocked: "浏览器拦截了弹窗，请点「重新打开授权页」。",
+    connectedCount: (n: number) => `已连接 ${n} 个 Agent`,
+    connectNone: "没有选中任何 Agent。",
+    connectUnverified: "已保存，但连通性校验未通过",
     agentName: "Agent 名称",
     handle: "提及名称",
     rpcUrl: "A2A 调用地址",
@@ -237,6 +252,20 @@ const copy = {
     send: "Send",
     noMessages: "It’s quiet here. Send the first message or @mention an agent to get moving.",
     addAgent: "Connect a new agent",
+    connectManyfold: "Connect from Manyfold",
+    connectManyfoldHint: "Pick agents from your Manyfold account — endpoint and token come back automatically, no copy-paste.",
+    connectOpening: "Opening the authorization page…",
+    connectWaiting: "Waiting for you to authorize on Manyfold…",
+    connectCodeLabel: "Verification code",
+    connectCodeHint: "The code on the Manyfold page must match this one. If it doesn’t, do not authorize.",
+    connectReopen: "Reopen authorization page",
+    connectCancel: "Cancel",
+    connectDenied: "Authorization was denied.",
+    connectExpired: "The authorization session expired — start again.",
+    connectPopupBlocked: "Your browser blocked the popup — use “Reopen authorization page”.",
+    connectedCount: (n: number) => `Connected ${n} agent${n === 1 ? "" : "s"}`,
+    connectNone: "No agents were selected.",
+    connectUnverified: "Saved, but the connection check failed",
     agentName: "Agent name",
     handle: "Mention handle",
     rpcUrl: "A2A RPC URL",
@@ -1224,6 +1253,160 @@ function PeopleModal(props: {
   );
 }
 
+interface ConnectSession {
+  connectId: string;
+  userCode: string;
+  authUrl: string;
+  expiresAt: string;
+}
+
+interface ConnectedAgentResult {
+  id: string;
+  name: string;
+  handle: string;
+  created: boolean;
+  verified: boolean;
+  warning?: string;
+}
+
+type ConnectPoll =
+  | { status: "pending" }
+  | { status: "denied" }
+  | { status: "expired" }
+  | {
+      status: "approved";
+      agents: ConnectedAgentResult[];
+      failed: Array<{ name: string; error: string }>;
+    };
+
+/**
+ * Device-code handshake against Manyfold: we open their consent page in a popup
+ * and poll our own worker, which holds the device code. Tokens are minted on
+ * Manyfold's side at poll time and land encrypted in D1 — they never reach the
+ * browser, so nothing here ever holds a credential.
+ */
+function ManyfoldConnectPanel(props: {
+  locale: Locale;
+  onConnected: () => Promise<void>;
+}) {
+  const { locale, onConnected } = props;
+  const t = copy[locale];
+  const [session, setSession] = useState<ConnectSession | null>(null);
+  const [starting, setStarting] = useState(false);
+  const [error, setError] = useState("");
+  const [result, setResult] = useState<ConnectPoll | null>(null);
+  const popup = useRef<Window | null>(null);
+
+  const openConsent = (url: string) => {
+    popup.current = window.open(url, "manyfold-connect", "width=520,height=760,noopener,noreferrer");
+    if (!popup.current) setError(t.connectPopupBlocked);
+  };
+
+  const start = async () => {
+    setStarting(true);
+    setError("");
+    setResult(null);
+    try {
+      const started = await api<{ connect: ConnectSession }>("/api/manyfold/connect", { method: "POST" });
+      setSession(started.connect);
+      openConsent(started.connect.authUrl);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setStarting(false);
+    }
+  };
+
+  const cancel = async () => {
+    const current = session;
+    setSession(null);
+    popup.current?.close();
+    if (current) {
+      await api(`/api/manyfold/connect/${encodeURIComponent(current.connectId)}`, { method: "DELETE" })
+        .catch(() => undefined);
+    }
+  };
+
+  // Polls while a session is live. Manyfold's session TTL is 15 minutes; the
+  // interval stops on any terminal status so an abandoned popup goes quiet.
+  useEffect(() => {
+    if (!session) return;
+    let stopped = false;
+    const tick = async () => {
+      try {
+        const poll = await api<ConnectPoll>(
+          `/api/manyfold/connect/${encodeURIComponent(session.connectId)}/poll`,
+          { method: "POST" },
+        );
+        if (stopped || poll.status === "pending") return;
+        setResult(poll);
+        setSession(null);
+        popup.current?.close();
+        if (poll.status === "approved") await onConnected();
+      } catch (cause) {
+        if (stopped) return;
+        setError(cause instanceof Error ? cause.message : String(cause));
+        setSession(null);
+      }
+    };
+    const timer = setInterval(() => void tick(), 2_000);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
+  }, [session, onConnected]);
+
+  return (
+    <div className="manyfold-connect">
+      {!session && (
+        <button className="secondary-button" onClick={() => void start()} disabled={starting}>
+          {starting
+            ? <><RefreshCw className="spin" size={14} /> {t.connectOpening}</>
+            : <><Sparkles size={14} /> {t.connectManyfold}</>}
+        </button>
+      )}
+      {session && (
+        <div className="connect-waiting">
+          <div className="connect-code">
+            <small>{t.connectCodeLabel}</small>
+            <strong>{session.userCode}</strong>
+          </div>
+          <p className="history-note"><ShieldCheck size={14} /> {t.connectCodeHint}</p>
+          <p className="history-note"><RefreshCw className="spin" size={14} /> {t.connectWaiting}</p>
+          <div className="connect-actions">
+            <button type="button" className="secondary-button" onClick={() => openConsent(session.authUrl)}>
+              <ExternalLink size={14} /> {t.connectReopen}
+            </button>
+            <button type="button" className="secondary-button danger-text" onClick={() => void cancel()}>
+              {t.connectCancel}
+            </button>
+          </div>
+        </div>
+      )}
+      {!session && !result && <p className="history-note"><Sparkles size={14} /> {t.connectManyfoldHint}</p>}
+      {result?.status === "denied" && <div className="form-error">{t.connectDenied}</div>}
+      {result?.status === "expired" && <div className="form-error">{t.connectExpired}</div>}
+      {result?.status === "approved" && (
+        <div className="connect-result">
+          <strong>{result.agents.length ? t.connectedCount(result.agents.length) : t.connectNone}</strong>
+          {result.agents.map((agent) => (
+            <div className="connect-result-row" key={agent.id}>
+              <Check size={14} /> <span>@{agent.handle} · {agent.name}</span>
+              {!agent.verified && <em className="connect-warn">{t.connectUnverified}</em>}
+            </div>
+          ))}
+          {result.failed.map((entry) => (
+            <div className="connect-result-row failed" key={entry.name}>
+              <X size={14} /> <span>{entry.name} · {entry.error}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {error && <div className="form-error">{error}</div>}
+    </div>
+  );
+}
+
 function AgentsModal(props: {
   locale: Locale;
   currentUser: User;
@@ -1340,6 +1523,7 @@ function AgentsModal(props: {
         <div className="security-note"><ShieldCheck size={16} /><span>{locale === "zh" ? "Token 加密保存且永不回显" : "Tokens are encrypted and never shown again"}</span></div>
         <button className="primary-button" onClick={openCreate}><Plus size={16} /> {t.addAgent}</button>
       </div>
+      <ManyfoldConnectPanel locale={locale} onConnected={onChanged} />
       {formFor && (
         <form className="agent-form" onSubmit={submit}>
           <div className="form-grid">

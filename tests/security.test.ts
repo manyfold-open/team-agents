@@ -15,7 +15,9 @@ describe("authentication primitives", () => {
     expect(normalizeUsername("  Alice.Example ")).toBe("alice.example");
   });
 
-  it("uses the configured scrypt work factor and a unique salt", async () => {
+  // Four scrypt derivations at N=32768/r=8/p=3 are deliberately expensive; the
+  // 5s default is not enough once vitest runs several files in parallel.
+  it("uses the configured scrypt work factor and a unique salt", { timeout: 30_000 }, async () => {
     const first = await hashPassword("correct horse battery staple");
     const second = await hashPassword("correct horse battery staple");
 

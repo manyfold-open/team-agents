@@ -36,3 +36,4 @@ max_concurrency = 8
 
 [vars]
 ENVIRONMENT = "production"
+MANYFOLD_API_BASE_URL = "https://api.manyfold.ai"

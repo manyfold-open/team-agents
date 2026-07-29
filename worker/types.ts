@@ -13,6 +13,8 @@ export interface Env {
   ENVIRONMENT?: string;
   CREDENTIALS_ENCRYPTION_KEY?: string;
   AUTH_HMAC_KEY?: string;
+  /** Manyfold API origin for the A2A connect flow. Defaults to production. */
+  MANYFOLD_API_BASE_URL?: string;
 }
 
 export interface AuthUser {

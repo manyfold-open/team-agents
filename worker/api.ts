@@ -28,6 +28,11 @@ import {
 } from "./data";
 import { ensureSchema } from "./schema-sql";
 import { agentHttpError, fetchAgentCard, verifyAgentCredentials, type AgentCardSummary } from "./a2a";
+import {
+  cancelManyfoldConnect,
+  pollManyfoldConnect,
+  startManyfoldConnect,
+} from "./manyfold";
 import type { AgentInput, AgentQueueMessage, AuthUser, CreateMessageInput, Env } from "./types";
 
 const WORKSPACE_ID = "main";
@@ -72,6 +77,20 @@ export async function handleApiRequest(
     }
     if (url.pathname === "/api/agents/discover" && request.method === "POST") {
       return await discoverAgent(request, env);
+    }
+    if (url.pathname === "/api/manyfold/connect" && request.method === "POST") {
+      const user = await requireAuth(request, env);
+      return await startManyfoldConnect(request, env, user.id);
+    }
+    const connectPoll = url.pathname.match(/^\/api\/manyfold\/connect\/([^/]+)\/poll$/);
+    if (connectPoll && request.method === "POST") {
+      const user = await requireAuth(request, env);
+      return await pollManyfoldConnect(env, user.id, decodeURIComponent(connectPoll[1]));
+    }
+    const connectCancel = url.pathname.match(/^\/api\/manyfold\/connect\/([^/]+)$/);
+    if (connectCancel && request.method === "DELETE") {
+      const user = await requireAuth(request, env);
+      return await cancelManyfoldConnect(env, user.id, decodeURIComponent(connectCancel[1]));
     }
 
     const channelMessages = url.pathname.match(/^\/api\/channels\/([^/]+)\/messages$/);

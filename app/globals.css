@@ -2074,6 +2074,79 @@ button:disabled {
   color: var(--primary);
 }
 
+/* Manyfold one-click connect */
+
+.manyfold-connect {
+  display: grid;
+  gap: var(--s-xs, 6px);
+  margin-bottom: var(--s-md);
+  padding: var(--pad-card);
+  border: 1px solid var(--lavender-line);
+  border-radius: var(--r-md);
+  background: var(--canvas-lavender);
+  justify-items: start;
+}
+
+.connect-waiting {
+  display: grid;
+  gap: var(--s-xs, 6px);
+  width: 100%;
+}
+
+.connect-code {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-sm);
+}
+
+.connect-code small {
+  color: var(--ink-mute);
+  font: var(--text-caption);
+  font-size: 11px;
+  letter-spacing: var(--track-caption);
+}
+
+.connect-code strong {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 20px;
+  letter-spacing: 0.14em;
+}
+
+.connect-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-sm);
+}
+
+.connect-result {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+}
+
+.connect-result-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font: var(--text-caption);
+  font-size: 12px;
+}
+
+.connect-result-row svg {
+  flex: 0 0 auto;
+  color: var(--primary);
+}
+
+.connect-result-row.failed svg {
+  color: var(--danger, #b3261e);
+}
+
+.connect-warn {
+  color: var(--ink-mute);
+  font-size: 11px;
+  font-style: normal;
+}
+
 .agent-form {
   display: grid;
   gap: var(--s-sm);
