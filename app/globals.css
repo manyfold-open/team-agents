@@ -507,6 +507,51 @@ button:disabled {
   box-shadow: none;
 }
 
+.input-with-action {
+  display: flex;
+  gap: 6px;
+  align-items: stretch;
+}
+
+.input-with-action input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.input-with-action button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.card-preview {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-sm);
+  background: var(--canvas);
+  color: var(--ink-mute);
+  font: var(--text-caption);
+  font-size: 11px;
+  letter-spacing: var(--track-caption);
+}
+
+.card-preview svg {
+  flex: 0 0 auto;
+  color: var(--primary);
+}
+
+.card-preview strong {
+  color: var(--ink);
+}
+
+.card-preview small {
+  flex: 1 1 100%;
+  color: var(--ink-mute);
+}
+
 .form-error,
 .form-success {
   display: flex;

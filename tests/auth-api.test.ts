@@ -77,6 +77,29 @@ describe("API error boundary", () => {
     });
   });
 
+  it("requires a session for Agent Card discovery", async () => {
+    const response = await handleApiRequest(
+      new Request("https://team-agents.test/api/agents/discover", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          origin: "https://team-agents.test",
+        },
+        body: JSON.stringify({ cardUrl: "https://agents.example.com/a2a/agents/x" }),
+      }),
+      createMockEnv(),
+    );
+
+    // Route is wired (not a 404) and rejects before any outbound card fetch.
+    expect(response?.status).toBe(401);
+    await expect(response?.json()).resolves.toEqual({
+      error: {
+        code: "authentication_required",
+        message: "Please sign in.",
+      },
+    });
+  });
+
   it("captures asynchronous authorization failures outside auth routes", async () => {
     const response = await handleApiRequest(
       new Request("https://team-agents.test/api/channels", {

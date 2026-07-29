@@ -1,4 +1,4 @@
-import { decryptCredential, redactSecret } from "./security";
+import { decryptCredential, HttpError, redactSecret } from "./security";
 import { getPublicMessage, recordChannelEvent } from "./data";
 import type { AgentQueueMessage, Env } from "./types";
 
@@ -88,6 +88,178 @@ const TERMINAL = new Set<TaskState>([
 ]);
 const STREAM_SEGMENT_MS = 9 * 60_000;
 const RUN_LIMIT_MS = 2 * 60 * 60_000;
+
+export interface AgentCardSummary {
+  cardUrl: string;
+  name: string;
+  description: string;
+  rpcUrl: string;
+  protocolVersion: string;
+  streaming: boolean;
+  skills: string[];
+}
+
+/**
+ * Fetches the first candidate that parses as an A2A v0.3 Agent Card. Cards are
+ * public and unauthenticated, so no bearer is sent — a card that needs auth is
+ * treated as undiscoverable and the caller falls back to manual entry.
+ */
+export async function fetchAgentCard(candidates: string[]): Promise<AgentCardSummary> {
+  let lastError: A2AError | null = null;
+  for (const cardUrl of candidates) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10_000);
+    try {
+      const response = await fetch(cardUrl, {
+        method: "GET",
+        headers: { accept: "application/json" },
+        redirect: "manual",
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        lastError = await responseError(response);
+        continue;
+      }
+      const card = await response.json() as Record<string, unknown>;
+      lastError = null;
+      return summarizeCard(card, cardUrl);
+    } catch (error) {
+      lastError = normalizeA2AError(error);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  throw lastError ?? new A2AError("No A2A Agent Card was found at that URL.", false);
+}
+
+function summarizeCard(card: Record<string, unknown>, cardUrl: string): AgentCardSummary {
+  const rpcUrl = stringValue(card.url) ?? preferredInterfaceUrl(card.additionalInterfaces);
+  if (!rpcUrl) {
+    throw new A2AError("The Agent Card has no JSON-RPC endpoint URL.", false);
+  }
+  const name = (stringValue(card.name) ?? "").trim();
+  if (!name) throw new A2AError("The Agent Card has no name.", false);
+  const capabilities = card.capabilities as Record<string, unknown> | undefined;
+  const skills = Array.isArray(card.skills)
+    ? card.skills
+      .map((skill) => stringValue((skill as Record<string, unknown>)?.name))
+      .filter((value): value is string => Boolean(value))
+      .slice(0, 8)
+    : [];
+  return {
+    cardUrl,
+    name: name.slice(0, 60),
+    description: (stringValue(card.description) ?? "").trim().slice(0, 240),
+    rpcUrl,
+    protocolVersion: stringValue(card.protocolVersion) ?? "unknown",
+    streaming: capabilities?.streaming === true,
+    skills,
+  };
+}
+
+function preferredInterfaceUrl(raw: unknown): string | null {
+  if (!Array.isArray(raw)) return null;
+  for (const entry of raw) {
+    const record = entry as Record<string, unknown>;
+    if (stringValue(record?.transport)?.toUpperCase() === "JSONRPC") {
+      const url = stringValue(record?.url);
+      if (url) return url;
+    }
+  }
+  return null;
+}
+
+/**
+ * Verifies the bearer is accepted without spending an agent turn.
+ *
+ * `tasks/get` on a random id is enough: A2A servers authenticate the request
+ * before dispatching the method, so an auth failure surfaces as HTTP 401/403
+ * while an accepted token yields a task-not-found JSON-RPC error. Returns
+ * `false` when the server does not implement `tasks/get`, so the caller can
+ * fall back to the streaming test.
+ */
+export async function probeAgentAuth(rpcUrl: string, bearerToken: string): Promise<boolean> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15_000);
+  try {
+    const response = await fetch(rpcUrl, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json",
+        authorization: `Bearer ${bearerToken}`,
+      },
+      redirect: "manual",
+      signal: controller.signal,
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: crypto.randomUUID(),
+        method: "tasks/get",
+        params: { id: `probe-${crypto.randomUUID()}` },
+      }),
+    });
+    if (response.status === 401 || response.status === 403) {
+      throw await responseError(response);
+    }
+    // Anything other than an outright auth rejection is inconclusive at the
+    // transport layer — only a well-formed JSON-RPC reply proves the bearer
+    // reached the method dispatcher.
+    if (!response.ok) return false;
+    const data = await response.json() as Record<string, unknown>;
+    const code = Number((data.error as Record<string, unknown> | undefined)?.code);
+    if (code === -32601 || code === -32000) return false;
+    return "result" in data || "error" in data;
+  } catch (error) {
+    const normalized = normalizeA2AError(error);
+    if (normalized.status === 401 || normalized.status === 403) throw normalized;
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Confirms the credentials work, preferring the cheap `tasks/get` probe and
+ * only falling back to a real streaming turn when the server cannot answer it.
+ */
+export async function verifyAgentCredentials(
+  rpcUrl: string,
+  bearerToken: string,
+): Promise<{ ok: true; method: "probe" | "stream" }> {
+  if (await probeAgentAuth(rpcUrl, bearerToken)) return { ok: true, method: "probe" };
+  await testAgentStream(rpcUrl, bearerToken);
+  return { ok: true, method: "stream" };
+}
+
+/**
+ * Turns a card/credential failure into an actionable API error. Without this the
+ * generic handler would flatten an A2AError into an opaque 500 and the operator
+ * would have no idea whether the URL, the token, or the network was at fault.
+ * A2AError messages are redacted at construction, so they are safe to surface.
+ */
+export function agentHttpError(error: unknown, context: "discover" | "connect"): never {
+  if (error instanceof HttpError) throw error;
+  const a2a = normalizeA2AError(error);
+  if (a2a.status === 401 || a2a.status === 403) {
+    throw new HttpError(
+      400,
+      "agent_token_rejected",
+      `The Agent endpoint rejected the Bearer token. ${a2a.message}`,
+    );
+  }
+  if (context === "discover") {
+    throw new HttpError(
+      400,
+      "agent_card_unavailable",
+      `Could not read an A2A Agent Card at that URL. ${a2a.message}`,
+    );
+  }
+  throw new HttpError(
+    502,
+    "agent_unreachable",
+    `Could not reach the A2A endpoint. ${a2a.message}`,
+  );
+}
 
 export async function testAgentStream(
   rpcUrl: string,

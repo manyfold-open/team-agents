@@ -46,6 +46,11 @@ export interface AgentInput {
   handle: string;
   description?: string;
   rpcUrl: string;
+  /**
+   * Agent Card / A2A base / RPC URL to discover from. When present, `name`,
+   * `description` and `rpcUrl` are filled from the card unless explicitly set.
+   */
+  cardUrl?: string;
   bearerToken?: string;
   historyCount: number;
 }

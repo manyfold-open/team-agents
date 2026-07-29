@@ -387,14 +387,27 @@ export async function decryptCredential(env: Env, ciphertext: string, iv: string
 }
 
 export function validateAgentRpcUrl(raw: unknown, production: boolean): string {
+  return validateOutboundUrl(raw, production, "A2A RPC URL");
+}
+
+/**
+ * Same SSRF guard as the RPC URL, applied to a discovery (Agent Card) URL.
+ * Card fetches are unauthenticated server-side requests driven by user input,
+ * so they need exactly the same host restrictions as the RPC endpoint.
+ */
+export function validateAgentCardUrl(raw: unknown, production: boolean): string {
+  return validateOutboundUrl(raw, production, "Agent Card URL");
+}
+
+function validateOutboundUrl(raw: unknown, production: boolean, label: string): string {
   if (typeof raw !== "string") {
-    throw new HttpError(400, "invalid_agent_url", "A2A RPC URL is required.");
+    throw new HttpError(400, "invalid_agent_url", `${label} is required.`);
   }
   let url: URL;
   try {
     url = new URL(raw);
   } catch {
-    throw new HttpError(400, "invalid_agent_url", "A2A RPC URL is invalid.");
+    throw new HttpError(400, "invalid_agent_url", `${label} is invalid.`);
   }
   if (url.username || url.password || url.hash) {
     throw new HttpError(400, "invalid_agent_url", "Credentials and fragments are not allowed in the URL.");
@@ -434,9 +447,42 @@ export function validateAgentRpcUrl(raw: unknown, production: boolean): string {
     throw new HttpError(400, "unsafe_agent_url", "Production Agent URLs must use public HTTPS hosts.");
   }
   if (!production && !["https:", "http:"].includes(url.protocol)) {
-    throw new HttpError(400, "invalid_agent_url", "A2A RPC URL must use HTTP or HTTPS.");
+    throw new HttpError(400, "invalid_agent_url", `${label} must use HTTP or HTTPS.`);
   }
   return url.toString();
+}
+
+/**
+ * Turns whatever the user pasted into an ordered list of Agent Card URLs to try.
+ * Accepts a card URL, an A2A base URL, or the RPC URL itself — Manyfold serves
+ * `<base>/rpc` and `<base>/agent-card.json` off the same per-agent base, so a
+ * pasted RPC URL is enough to discover the card.
+ */
+export function agentCardCandidates(raw: unknown, production: boolean): string[] {
+  const validated = validateAgentCardUrl(raw, production);
+  const url = new URL(validated);
+  url.search = "";
+  if (url.pathname.toLowerCase().endsWith(".json")) return [url.toString()];
+
+  const base = new URL(url.toString());
+  base.pathname = base.pathname.replace(/\/+$/, "").replace(/\/rpc$/i, "");
+  const wellKnown = new URL(base.toString());
+  wellKnown.pathname = `${base.pathname}/.well-known/agent-card.json`;
+  const direct = new URL(base.toString());
+  direct.pathname = `${base.pathname}/agent-card.json`;
+  return [wellKnown.toString(), direct.toString()];
+}
+
+/** Derives a mention handle from a display name; caller resolves collisions. */
+export function deriveAgentHandle(name: string): string {
+  const slug = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 31)
+    .replace(/-+$/g, "");
+  if (!/^[a-z0-9]/.test(slug)) return `agent-${slug}`.slice(0, 31).replace(/-+$/g, "");
+  return slug.length < 2 ? `${slug}-agent` : slug;
 }
 
 export function redactSecret(value: string): string {

@@ -1,7 +1,9 @@
 import {
+  agentCardCandidates,
   assertMutationOrigin,
   createSession,
   deleteSession,
+  deriveAgentHandle,
   encryptCredential,
   enforceRateLimit,
   errorResponse,
@@ -25,7 +27,7 @@ import {
   requireChannelMember,
 } from "./data";
 import { ensureSchema } from "./schema-sql";
-import { testAgentStream } from "./a2a";
+import { agentHttpError, fetchAgentCard, verifyAgentCredentials, type AgentCardSummary } from "./a2a";
 import type { AgentInput, AgentQueueMessage, AuthUser, CreateMessageInput, Env } from "./types";
 
 const WORKSPACE_ID = "main";
@@ -67,6 +69,9 @@ export async function handleApiRequest(
     }
     if (url.pathname === "/api/agents" && request.method === "POST") {
       return await createAgent(request, env);
+    }
+    if (url.pathname === "/api/agents/discover" && request.method === "POST") {
+      return await discoverAgent(request, env);
     }
 
     const channelMessages = url.pathname.match(/^\/api\/channels\/([^/]+)\/messages$/);
@@ -721,16 +726,70 @@ async function listAgents(request: Request, env: Env): Promise<Response> {
   return json({ agents: await getAgentsForUser(env, user) });
 }
 
+/** Reads the public Agent Card behind whatever URL shape the user pasted. */
+async function discoverCard(cardUrl: unknown, env: Env): Promise<AgentCardSummary> {
+  const candidates = agentCardCandidates(cardUrl, env.ENVIRONMENT === "production");
+  try {
+    const card = await fetchAgentCard(candidates);
+    // The endpoint advertised by the card is still user-influenced input, so it
+    // goes through the same host guard as a hand-entered RPC URL.
+    return { ...card, rpcUrl: validateAgentRpcUrl(card.rpcUrl, env.ENVIRONMENT === "production") };
+  } catch (error) {
+    agentHttpError(error, "discover");
+  }
+}
+
+/** Verifies credentials and reports failures as an actionable 4xx/502. */
+async function verifyAgentConnection(rpcUrl: string, bearerToken: string): Promise<void> {
+  try {
+    await verifyAgentCredentials(rpcUrl, bearerToken);
+  } catch (error) {
+    agentHttpError(error, "connect");
+  }
+}
+
+async function discoverAgent(request: Request, env: Env): Promise<Response> {
+  await requireAuth(request, env);
+  const body = await readJson<{ cardUrl?: string }>(request);
+  const card = await discoverCard(body.cardUrl, env);
+  return json({
+    card: {
+      cardUrl: card.cardUrl,
+      name: card.name,
+      description: card.description,
+      rpcUrl: card.rpcUrl,
+      protocolVersion: card.protocolVersion,
+      streaming: card.streaming,
+      skills: card.skills,
+      suggestedHandle: deriveAgentHandle(card.name),
+    },
+  });
+}
+
+/** Appends `-2`, `-3`… until the derived handle is free in this workspace. */
+async function uniqueHandle(env: Env, base: string, excludeAgentId?: string): Promise<string> {
+  for (let suffix = 1; suffix <= 50; suffix += 1) {
+    const candidate = suffix === 1 ? base : `${base.slice(0, 31 - `-${suffix}`.length)}-${suffix}`;
+    const row = await env.DB.prepare(
+      "SELECT id FROM agents WHERE workspace_id='main' AND handle=? AND id IS NOT ?",
+    ).bind(candidate, excludeAgentId ?? null).first<{ id: string }>();
+    if (!row) return candidate;
+  }
+  throw new HttpError(409, "agent_handle_taken", "Could not derive a free Agent handle.");
+}
+
 function validateAgentInput(
   input: Partial<AgentInput>,
   env: Env,
   requireToken: boolean,
-): Required<Omit<AgentInput, "bearerToken">> & { bearerToken?: string } {
-  const name = typeof input.name === "string" ? input.name.trim().slice(0, 60) : "";
+  card?: AgentCardSummary,
+): Required<Omit<AgentInput, "bearerToken" | "cardUrl">> & { bearerToken?: string } {
+  const name = typeof input.name === "string" && input.name.trim()
+    ? input.name.trim().slice(0, 60)
+    : card?.name ?? "";
   if (!name) throw new HttpError(400, "invalid_agent_name", "Agent name is required.");
-  const handle = typeof input.handle === "string"
-    ? input.handle.trim().toLowerCase().replace(/^@/, "")
-    : "";
+  const rawHandle = typeof input.handle === "string" ? input.handle.trim().toLowerCase().replace(/^@/, "") : "";
+  const handle = rawHandle || (card ? deriveAgentHandle(name) : "");
   if (!/^[a-z0-9][a-z0-9_-]{1,30}$/.test(handle)) {
     throw new HttpError(400, "invalid_agent_handle", "Agent handle must be 2–31 lowercase letters, numbers, underscores, or hyphens.");
   }
@@ -738,20 +797,34 @@ function validateAgentInput(
   if (requireToken && !bearerToken) {
     throw new HttpError(400, "agent_token_required", "Bearer token is required.");
   }
+  const description = typeof input.description === "string" && input.description.trim()
+    ? input.description.trim().slice(0, 240)
+    : card?.description ?? "";
   return {
     name,
     handle,
-    description: typeof input.description === "string" ? input.description.trim().slice(0, 240) : "",
-    rpcUrl: validateAgentRpcUrl(input.rpcUrl, env.ENVIRONMENT === "production"),
-    historyCount: Math.min(100, Math.max(0, Number(input.historyCount) || 0)),
+    description,
+    rpcUrl: card && input.rpcUrl === undefined
+      ? card.rpcUrl
+      : validateAgentRpcUrl(input.rpcUrl, env.ENVIRONMENT === "production"),
+    historyCount: input.historyCount === undefined
+      ? 20
+      : Math.min(100, Math.max(0, Number(input.historyCount) || 0)),
     ...(bearerToken ? { bearerToken } : {}),
   };
 }
 
 async function createAgent(request: Request, env: Env): Promise<Response> {
   const user = await requireAuth(request, env);
-  const input = validateAgentInput(await readJson<Partial<AgentInput>>(request), env, true);
-  await testAgentStream(input.rpcUrl, input.bearerToken!);
+  const body = await readJson<Partial<AgentInput>>(request);
+  const card = body.cardUrl ? await discoverCard(body.cardUrl, env) : undefined;
+  const input = validateAgentInput(body, env, true, card);
+  await verifyAgentConnection(input.rpcUrl, input.bearerToken!);
+  // A handle the user never typed must not fail the save; a typed one still does.
+  const handle = typeof body.handle === "string" && body.handle.trim()
+    ? input.handle
+    : await uniqueHandle(env, input.handle);
+  input.handle = handle;
   const encrypted = await encryptCredential(env, input.bearerToken!);
   const agentId = crypto.randomUUID();
   const now = new Date().toISOString();
@@ -822,32 +895,40 @@ async function updateAgent(request: Request, env: Env, agentId: string): Promise
     throw new HttpError(403, "agent_owner_required", "Only the Agent owner can edit credentials.");
   }
   const raw = await readJson<Partial<AgentInput>>(request);
+  // Re-discovery refreshes name / description / endpoint from the card, but only
+  // for fields the caller did not override in this request.
+  const card = raw.cardUrl ? await discoverCard(raw.cardUrl, env) : undefined;
   const input = validateAgentInput({
-    name: raw.name ?? current.name,
+    name: raw.name ?? card?.name ?? current.name,
     handle: raw.handle ?? current.handle,
-    description: raw.description ?? current.description,
-    rpcUrl: raw.rpcUrl ?? current.rpc_url,
+    description: raw.description ?? card?.description ?? current.description,
+    rpcUrl: raw.rpcUrl ?? card?.rpcUrl ?? current.rpc_url,
     historyCount: raw.historyCount ?? current.history_count,
     bearerToken: raw.bearerToken,
   }, env, false);
+  const currentToken = await import("./security").then(({ decryptCredential }) =>
+    decryptCredential(env, current.token_ciphertext, current.token_iv));
+  const token = input.bearerToken || currentToken;
+  await verifyAgentConnection(input.rpcUrl, token);
   let ciphertext = current.token_ciphertext;
   let iv = current.token_iv;
-  const token = input.bearerToken
-    ? input.bearerToken
-    : await import("./security").then(({ decryptCredential }) =>
-      decryptCredential(env, current.token_ciphertext, current.token_iv));
-  await testAgentStream(input.rpcUrl, token);
-  if (input.bearerToken) {
+  // A stored A2A contextId only belongs to one endpoint + identity, so renaming
+  // an Agent or changing its history depth must not throw away channel memory.
+  // Only a new endpoint or a genuinely different token invalidates it — and the
+  // config_version bump has to be conditional too, since the queue worker resets
+  // context on its own whenever the versions diverge (see a2a.ts getConversation).
+  const credentialsChanged = input.rpcUrl !== current.rpc_url || token !== currentToken;
+  if (input.bearerToken && token !== currentToken) {
     const encrypted = await encryptCredential(env, input.bearerToken);
     ciphertext = encrypted.ciphertext;
     iv = encrypted.iv;
   }
   const now = new Date().toISOString();
   try {
-    await env.DB.batch([
+    const statements = [
       env.DB.prepare(
         `UPDATE agents SET name=?,handle=?,description=?,rpc_url=?,token_ciphertext=?,
-         token_iv=?,history_count=?,enabled=1,config_version=config_version+1,updated_at=?
+         token_iv=?,history_count=?,enabled=1,config_version=config_version+?,updated_at=?
          WHERE id=?`,
       ).bind(
         input.name,
@@ -857,13 +938,17 @@ async function updateAgent(request: Request, env: Env, agentId: string): Promise
         ciphertext,
         iv,
         input.historyCount,
+        credentialsChanged ? 1 : 0,
         now,
         agentId,
       ),
-      env.DB.prepare(
+    ];
+    if (credentialsChanged) {
+      statements.push(env.DB.prepare(
         "UPDATE agent_conversations SET context_id=NULL,active_task_id=NULL,updated_at=? WHERE agent_id=?",
-      ).bind(now, agentId),
-    ]);
+      ).bind(now, agentId));
+    }
+    await env.DB.batch(statements);
   } catch (error) {
     if (/unique/i.test(String(error))) {
       throw new HttpError(409, "agent_handle_taken", "That Agent handle is already in use.");

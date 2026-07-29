@@ -6,6 +6,7 @@ import {
   Check,
   ChevronDown,
   CirclePlus,
+  Download,
   Globe2,
   Hash,
   Languages,
@@ -14,6 +15,7 @@ import {
   Menu,
   MessageCircle,
   MoreHorizontal,
+  Pencil,
   Plus,
   RefreshCw,
   Search,
@@ -57,6 +59,16 @@ type Agent = {
   enabled: boolean;
   tokenConfigured: boolean;
   channelCount: number;
+};
+type DiscoveredCard = {
+  cardUrl: string;
+  name: string;
+  description: string;
+  rpcUrl: string;
+  protocolVersion: string;
+  streaming: boolean;
+  skills: string[];
+  suggestedHandle: string;
 };
 type RosterUser = { id: string; username: string; role: "manager" | "member"; kind: "user" };
 type RosterAgent = {
@@ -140,6 +152,20 @@ const copy = {
     agentName: "Agent 名称",
     handle: "提及名称",
     rpcUrl: "A2A 调用地址",
+    cardUrl: "Agent Card 或 RPC 地址",
+    discover: "读取 Agent Card",
+    discovering: "正在读取…",
+    discoverHint: "粘贴 Agent Card、A2A base 或 RPC 地址，下面的字段会自动填好。",
+    discoverFailed: "没读到 Agent Card，请手动填写下面的字段。",
+    discoveredFrom: "已从 Agent Card 读取",
+    streamingOn: "支持流式",
+    streamingOff: "不支持流式",
+    details: "名称与职责（可改）",
+    editAgent: "编辑",
+    saveChanges: "保存修改",
+    tokenKeep: "留空表示沿用当前 token",
+    memoryResetNote: "端点或 token 变了，保存后各频道的 A2A 上下文会重置。",
+    reenableNote: "这个 Agent 已停用，保存后会重新启用。",
     token: "Bearer token",
     history: "发送历史消息数",
     historyNote: "同时会延续 A2A context，Agent 可能记得更早的对话。",
@@ -214,6 +240,20 @@ const copy = {
     agentName: "Agent name",
     handle: "Mention handle",
     rpcUrl: "A2A RPC URL",
+    cardUrl: "Agent card or RPC URL",
+    discover: "Read agent card",
+    discovering: "Reading…",
+    discoverHint: "Paste an agent card, A2A base, or RPC URL — the fields below fill themselves.",
+    discoverFailed: "No agent card found — fill the fields below manually.",
+    discoveredFrom: "Filled from the agent card",
+    streamingOn: "Streaming",
+    streamingOff: "No streaming",
+    details: "Name and role (editable)",
+    editAgent: "Edit",
+    saveChanges: "Save changes",
+    tokenKeep: "Leave blank to keep the current token",
+    memoryResetNote: "Endpoint or token changed — A2A context resets in every channel on save.",
+    reenableNote: "This agent is disabled; saving re-enables it.",
     token: "Bearer token",
     history: "History messages sent",
     historyNote: "A2A context also continues, so the agent may remember earlier conversation.",
@@ -1195,19 +1235,95 @@ function AgentsModal(props: {
 }) {
   const { locale, currentUser, agents, channel, channelAgents, onClose, onChanged } = props;
   const t = copy[locale];
-  const [showForm, setShowForm] = useState(false);
+  // null = closed, "new" = connect form, Agent = editing that agent.
+  const [formFor, setFormFor] = useState<Agent | "new" | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [form, setForm] = useState({ name: "", handle: "", description: "", rpcUrl: "", bearerToken: "", historyCount: 20 });
+  const [discovering, setDiscovering] = useState(false);
+  const [card, setCard] = useState<DiscoveredCard | null>(null);
   const channelAgentIds = new Set(channelAgents.map((agent) => agent.id));
+  const editing = formFor && formFor !== "new" ? formFor : null;
+  const closeForm = () => {
+    setFormFor(null);
+    setForm({ name: "", handle: "", description: "", rpcUrl: "", bearerToken: "", historyCount: 20 });
+    setCard(null);
+    setError("");
+  };
+  const openCreate = () => {
+    if (formFor === "new") return closeForm();
+    closeForm();
+    setFormFor("new");
+  };
+  const openEdit = (agent: Agent) => {
+    setCard(null);
+    setError("");
+    // The token is never echoed by the API, so it starts blank and is optional.
+    setForm({
+      name: agent.name,
+      handle: agent.handle,
+      description: agent.description,
+      rpcUrl: agent.rpcUrl,
+      bearerToken: "",
+      historyCount: agent.historyCount,
+    });
+    setFormFor(agent);
+  };
+  // Suffixes a suggested handle until it clears the handles already on screen, so
+  // discovery does not hand the user a value the server will reject.
+  const freeHandle = (suggested: string) => {
+    const taken = new Set(agents.map((agent) => agent.handle));
+    if (!taken.has(suggested)) return suggested;
+    for (let suffix = 2; suffix <= 50; suffix += 1) {
+      const candidate = `${suggested.slice(0, 31 - `-${suffix}`.length)}-${suffix}`;
+      if (!taken.has(candidate)) return candidate;
+    }
+    return suggested;
+  };
+  const discover = async () => {
+    if (!form.rpcUrl.trim()) return;
+    setDiscovering(true);
+    setError("");
+    try {
+      const result = await api<{ card: DiscoveredCard }>("/api/agents/discover", {
+        method: "POST",
+        body: JSON.stringify({ cardUrl: form.rpcUrl.trim() }),
+      });
+      setCard(result.card);
+      setForm((current) => ({
+        ...current,
+        name: current.name || result.card.name,
+        handle: current.handle || freeHandle(result.card.suggestedHandle),
+        description: current.description || result.card.description,
+      }));
+    } catch (cause) {
+      setCard(null);
+      setError(`${t.discoverFailed} ${cause instanceof Error ? cause.message : String(cause)}`);
+    } finally {
+      setDiscovering(false);
+    }
+  };
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     setBusy(true);
     setError("");
     try {
-      await api("/api/agents", { method: "POST", body: JSON.stringify(form) });
-      setShowForm(false);
-      setForm({ name: "", handle: "", description: "", rpcUrl: "", bearerToken: "", historyCount: 20 });
+      const payload = {
+        name: form.name,
+        handle: form.handle,
+        description: form.description,
+        historyCount: form.historyCount,
+        // A discovered agent is saved by card URL so the worker re-reads the
+        // endpoint from the card instead of trusting the pasted base URL.
+        ...(card ? { cardUrl: card.cardUrl } : { rpcUrl: form.rpcUrl }),
+        // Omitted rather than sent blank, so an edit keeps the stored token.
+        ...(form.bearerToken ? { bearerToken: form.bearerToken } : {}),
+      };
+      await api(editing ? `/api/agents/${encodeURIComponent(editing.id)}` : "/api/agents", {
+        method: editing ? "PATCH" : "POST",
+        body: JSON.stringify(payload),
+      });
+      closeForm();
       await onChanged();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -1215,28 +1331,72 @@ function AgentsModal(props: {
       setBusy(false);
     }
   };
+  const credentialsChanged = Boolean(
+    editing && (form.bearerToken || (card ? card.rpcUrl : form.rpcUrl) !== editing.rpcUrl),
+  );
   return (
     <ModalShell title={t.agents} subtitle={locale === "zh" ? "连接你的 A2A Agent，并决定它可以加入哪些频道。" : "Connect your A2A agents and choose the channels where they can work."} onClose={onClose} wide>
       <div className="agent-modal-toolbar">
         <div className="security-note"><ShieldCheck size={16} /><span>{locale === "zh" ? "Token 加密保存且永不回显" : "Tokens are encrypted and never shown again"}</span></div>
-        <button className="primary-button" onClick={() => setShowForm((value) => !value)}><Plus size={16} /> {t.addAgent}</button>
+        <button className="primary-button" onClick={openCreate}><Plus size={16} /> {t.addAgent}</button>
       </div>
-      {showForm && (
+      {formFor && (
         <form className="agent-form" onSubmit={submit}>
           <div className="form-grid">
+            <label className="span-two">
+              <span>{t.cardUrl}</span>
+              <div className="input-with-action">
+                <input
+                  type="url"
+                  value={form.rpcUrl}
+                  onChange={(event) => setForm({ ...form, rpcUrl: event.target.value })}
+                  // Auto-discovery only on first connect; during an edit a stray
+                  // blur must not surface a card error on an unrelated rename.
+                  onBlur={() => { if (!editing && !card && form.rpcUrl.trim()) void discover(); }}
+                  placeholder="https://api.manyfold.ai/api/a2a/agents/agt_…/rpc"
+                  required
+                />
+                <button type="button" className="secondary-button" onClick={() => void discover()} disabled={discovering || !form.rpcUrl.trim()}>
+                  {discovering ? <><RefreshCw className="spin" size={14} /> {t.discovering}</> : <><Download size={14} /> {t.discover}</>}
+                </button>
+              </div>
+            </label>
+            <label className="span-two">
+              <span>{t.token}</span>
+              <input
+                type="password"
+                value={form.bearerToken}
+                onChange={(event) => setForm({ ...form, bearerToken: event.target.value })}
+                autoComplete="off"
+                placeholder={editing ? t.tokenKeep : undefined}
+                required={!editing}
+              />
+            </label>
+            {card && (
+              <div className="span-two card-preview">
+                <ShieldCheck size={14} />
+                <span><strong>{t.discoveredFrom}</strong> · A2A {card.protocolVersion} · {card.streaming ? t.streamingOn : t.streamingOff}</span>
+                {card.skills.length > 0 && <small>{card.skills.join(" · ")}</small>}
+              </div>
+            )}
             <label><span>{t.agentName}</span><input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required /></label>
             <label><span>{t.handle}</span><div className="input-prefix"><span>@</span><input value={form.handle} onChange={(event) => setForm({ ...form, handle: event.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, "") })} required /></div></label>
             <label className="span-two"><span>{t.description}</span><input value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} /></label>
-            <label className="span-two"><span>{t.rpcUrl}</span><input type="url" value={form.rpcUrl} onChange={(event) => setForm({ ...form, rpcUrl: event.target.value })} placeholder="https://agent.example.com/rpc" required /></label>
-            <label className="span-two"><span>{t.token}</span><input type="password" value={form.bearerToken} onChange={(event) => setForm({ ...form, bearerToken: event.target.value })} autoComplete="off" required /></label>
             <label><span>{t.history}</span><input type="number" min={0} max={100} value={form.historyCount} onChange={(event) => setForm({ ...form, historyCount: Number(event.target.value) })} /></label>
           </div>
+          <p className="history-note"><Download size={14} /> {t.discoverHint}</p>
           <p className="history-note"><MessageCircle size={14} /> {t.historyNote}</p>
           <p className="history-note"><Globe2 size={14} /> {t.connectionTip}</p>
+          {credentialsChanged && <p className="history-note"><RefreshCw size={14} /> {t.memoryResetNote}</p>}
+          {editing && !editing.enabled && <p className="history-note"><Zap size={14} /> {t.reenableNote}</p>}
           {error && <div className="form-error">{error}</div>}
           <div className="form-actions">
-            <button type="button" className="secondary-button" onClick={() => setShowForm(false)}>{t.cancel}</button>
-            <button className="primary-button" disabled={busy}>{busy ? <><RefreshCw className="spin" size={16} /> {t.testing}</> : <><Zap size={16} /> {t.saveTest}</>}</button>
+            <button type="button" className="secondary-button" onClick={closeForm}>{t.cancel}</button>
+            <button className="primary-button" disabled={busy}>
+              {busy
+                ? <><RefreshCw className="spin" size={16} /> {t.testing}</>
+                : <><Zap size={16} /> {editing ? t.saveChanges : t.saveTest}</>}
+            </button>
           </div>
         </form>
       )}
@@ -1278,6 +1438,14 @@ function AgentsModal(props: {
                       });
                     }}
                   ><RefreshCw size={16} /></button>
+                )}
+                {mine && (
+                  <button
+                    className="icon-button"
+                    title={t.editAgent}
+                    aria-label={t.editAgent}
+                    onClick={() => openEdit(agent)}
+                  ><Pencil size={16} /></button>
                 )}
                 {(mine || currentUser.role === "owner") && agent.enabled && (
                   <button
