@@ -5,14 +5,14 @@ if (!baseUrl || !baseUrl.startsWith("https://")) {
   throw new Error("Usage: npm run smoke -- https://your-worker.workers.dev");
 }
 
-async function eventually(label, check) {
+async function eventually(label, check, attempts = 12) {
   let lastError;
-  for (let attempt = 1; attempt <= 12; attempt += 1) {
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
       return await check();
     } catch (error) {
       lastError = error;
-      if (attempt < 12) await new Promise((resolve) => setTimeout(resolve, 5_000));
+      if (attempt < attempts) await new Promise((resolve) => setTimeout(resolve, 5_000));
     }
   }
   throw new Error(`${label} failed after deployment propagation: ${lastError}`);
@@ -59,42 +59,45 @@ await eventually("Authentication error contract", async () => {
   }
 });
 
-const shellHtml = await eventually("Application shell", async () => {
+/**
+ * The shell is re-fetched on every attempt so it is checked against the assets
+ * of the same build. Reading it once lets a shell captured mid-propagation
+ * pin asset hashes the new deployment has already replaced, and the retry
+ * loop then re-requests those dead paths until it gives up.
+ */
+await eventually("Application shell and browser client assets", async () => {
   const response = await fetch(baseUrl, {
     headers: { accept: "text/html" },
   });
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
   assert.equal(response.headers.get("x-frame-options"), "DENY");
-  const html = await response.text();
-  assert.match(html, /Team Agents/i);
-  return html;
-});
+  const shellHtml = await response.text();
+  assert.match(shellHtml, /Team Agents/i);
 
-const clientAssetPaths = [
-  ...new Set(
-    [...shellHtml.matchAll(/\b(?:href|src)=["']([^"']+)["']/gi)]
-      .map((match) => match[1])
-      .filter((path) => /^\/assets\/.+\.(?:css|js)$/i.test(path)),
-  ),
-];
+  const clientAssetPaths = [
+    ...new Set(
+      [...shellHtml.matchAll(/\b(?:href|src)=["']([^"']+)["']/gi)]
+        .map((match) => match[1])
+        .filter((path) => /^\/assets\/.+\.(?:css|js)$/i.test(path)),
+    ),
+  ];
 
-assert.ok(
-  clientAssetPaths.some((path) => path.endsWith(".js")),
-  "Application shell must reference at least one JavaScript asset",
-);
-assert.ok(
-  clientAssetPaths.some((path) => path.endsWith(".css")),
-  "Application shell must reference at least one CSS asset",
-);
+  assert.ok(
+    clientAssetPaths.some((path) => path.endsWith(".js")),
+    "Application shell must reference at least one JavaScript asset",
+  );
+  assert.ok(
+    clientAssetPaths.some((path) => path.endsWith(".css")),
+    "Application shell must reference at least one CSS asset",
+  );
 
-await eventually("Browser client assets", async () => {
   await Promise.all(
     clientAssetPaths.map(async (path) => {
-      const response = await fetch(new URL(path, baseUrl));
-      assert.equal(response.status, 200, `${path} returned ${response.status}`);
+      const asset = await fetch(new URL(path, baseUrl));
+      assert.equal(asset.status, 200, `${path} returned ${asset.status}`);
 
-      const contentType = response.headers.get("content-type") ?? "";
+      const contentType = asset.headers.get("content-type") ?? "";
       if (path.endsWith(".js")) {
         assert.match(contentType, /javascript/i, `${path} has content-type ${contentType}`);
       } else {
@@ -102,12 +105,12 @@ await eventually("Browser client assets", async () => {
       }
 
       assert.ok(
-        Number(response.headers.get("content-length") ?? 0) > 0
-          || (await response.arrayBuffer()).byteLength > 0,
+        Number(asset.headers.get("content-length") ?? 0) > 0
+          || (await asset.arrayBuffer()).byteLength > 0,
         `${path} is empty`,
       );
     }),
   );
-});
+}, 24);
 
 console.log(`Team Agents smoke test passed: ${baseUrl}`);
