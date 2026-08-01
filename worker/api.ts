@@ -22,9 +22,11 @@ import {
 import {
   getPublicMessage,
   listPublicMessages,
+  MESSAGE_PAGE_SIZE,
   recordChannelEvent,
   requireChannelAccess,
   requireChannelMember,
+  splitMessagePage,
 } from "./data";
 import { ensureSchema } from "./schema-sql";
 import { agentHttpError, fetchAgentCard, verifyAgentCredentials, type AgentCardSummary } from "./a2a";
@@ -338,6 +340,10 @@ async function listChannels(env: Env, user: AuthUser): Promise<unknown[]> {
     `SELECT c.id,c.name,c.slug,c.topic,c.is_private,cm.role AS member_role,
       COALESCE((SELECT MAX(m.id) FROM messages m WHERE m.channel_id=c.id),0) AS latest_message_id,
       COALESCE(rc.last_message_id,0) AS last_read_id,
+      (SELECT COUNT(*) FROM messages m
+        WHERE m.channel_id=c.id
+          AND m.id>COALESCE(rc.last_message_id,0)
+          AND (m.sender_user_id IS NULL OR m.sender_user_id<>?)) AS unread_count,
       (SELECT COUNT(*) FROM channel_members x WHERE x.channel_id=c.id) AS member_count,
       (SELECT COUNT(*) FROM channel_agents x WHERE x.channel_id=c.id) AS agent_count
      FROM channels c
@@ -345,8 +351,8 @@ async function listChannels(env: Env, user: AuthUser): Promise<unknown[]> {
      LEFT JOIN read_cursors rc ON rc.channel_id=c.id AND rc.user_id=?
      WHERE c.workspace_id='main' AND c.archived_at IS NULL
        AND (c.is_private=0 OR cm.user_id IS NOT NULL OR ?='owner')
-     ORDER BY CASE WHEN c.slug='general' THEN 0 ELSE 1 END,c.name COLLATE NOCASE`,
-  ).bind(user.id, user.id, user.role).all<{
+     ORDER BY latest_message_id DESC,c.name COLLATE NOCASE`,
+  ).bind(user.id, user.id, user.id, user.role).all<{
     id: string;
     name: string;
     slug: string;
@@ -355,6 +361,7 @@ async function listChannels(env: Env, user: AuthUser): Promise<unknown[]> {
     member_role: "manager" | "member" | null;
     latest_message_id: number;
     last_read_id: number;
+    unread_count: number;
     member_count: number;
     agent_count: number;
   }>();
@@ -366,7 +373,8 @@ async function listChannels(env: Env, user: AuthUser): Promise<unknown[]> {
     isPrivate: Boolean(row.is_private),
     joined: Boolean(row.member_role) || user.role === "owner",
     role: row.member_role,
-    unread: Number(row.latest_message_id) > Number(row.last_read_id),
+    unread: Number(row.unread_count) > 0,
+    unreadCount: Number(row.unread_count),
     latestMessageId: Number(row.latest_message_id),
     memberCount: Number(row.member_count),
     agentCount: Number(row.agent_count),
@@ -455,10 +463,16 @@ async function getMessages(request: Request, env: Env, channelId: string): Promi
   const url = new URL(request.url);
   const before = Number(url.searchParams.get("before") ?? 0) || undefined;
   const threadRootId = Number(url.searchParams.get("thread") ?? 0) || undefined;
-  const messages = await listPublicMessages(env, channelId, user.id, { before, threadRootId });
+  const { messages, hasMore } = splitMessagePage(
+    await listPublicMessages(env, channelId, user.id, {
+      before,
+      threadRootId,
+      limit: MESSAGE_PAGE_SIZE + 1,
+    }),
+  );
   let root = null;
   if (threadRootId) root = await getPublicMessage(env, threadRootId, user.id);
-  return json({ channel, messages, root, requiresJoin: false });
+  return json({ channel, messages, root, hasMore, requiresJoin: false });
 }
 
 async function getRoster(request: Request, env: Env, channelId: string): Promise<Response> {

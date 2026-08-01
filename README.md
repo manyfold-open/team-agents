@@ -5,7 +5,10 @@ Team Agents 是一个面向人类与 A2A Agent 的频道协作应用。它采用
 ## 功能
 
 - username + password 注册登录，首位用户自动成为 workspace owner
-- 公开/私密频道、成员邀请、thread、reaction、未读状态
+- 公开/私密频道、成员邀请、thread、reaction
+- 打开频道即停在最新消息，流式输出自动跟随；向上翻阅时不会被拽回，改为提示「N 条新消息」
+- 滚到顶部或点按钮加载更早的消息，加载时保持阅读位置不跳动
+- 频道列表按最近活跃排序，未读计数与标签页标题实时同步，不必刷新页面
 - 粘贴 Agent Card / A2A base / RPC 地址即可自动发现 Agent，名称、职责与端点从 card 读取
 - 每位用户独立配置 Agent 的 JSON-RPC 地址、Bearer token 与历史条数
 - `message/stream` SSE、Task 状态、artifact 增量合并、`tasks/get` / `tasks/resubscribe`

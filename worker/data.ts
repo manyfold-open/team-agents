@@ -162,6 +162,21 @@ export async function getPublicMessage(
   return mapMessage(row, reactionRows.results, replyRow?.count ?? 0);
 }
 
+export const MESSAGE_PAGE_SIZE = 50;
+
+/**
+ * Callers over-fetch by one row so a single query answers both "what is on this
+ * page" and "is there anything older". Rows arrive oldest-first, so the surplus
+ * sits at the front and is what gets trimmed.
+ */
+export function splitMessagePage<T>(
+  rows: T[],
+  size: number = MESSAGE_PAGE_SIZE,
+): { messages: T[]; hasMore: boolean } {
+  if (rows.length <= size) return { messages: rows, hasMore: false };
+  return { messages: rows.slice(rows.length - size), hasMore: true };
+}
+
 export async function listPublicMessages(
   env: Env,
   channelId: string,

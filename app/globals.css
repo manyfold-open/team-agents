@@ -987,12 +987,25 @@ button:disabled {
   font-size: 11px;
 }
 
-.unread-dot {
-  width: 6px;
-  height: 6px;
+.unread-count {
+  display: grid;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
   flex: 0 0 auto;
-  border-radius: 50%;
+  place-items: center;
+  color: var(--primary);
+  border-radius: var(--r-pill);
   background: var(--on-primary);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.channel-row.has-unread {
+  color: var(--on-primary);
+  font-weight: 700;
 }
 
 .channel-section {
@@ -1151,8 +1164,17 @@ button:disabled {
   background: var(--canvas);
 }
 
-.conversation-pane > .channel-header + .message-scroll {
+.conversation-pane > .channel-header + .transcript {
   grid-row: 2 / 4;
+}
+
+/* Owns the scrollport so the jump-to-latest pill can float over it without
+   taking a grid row of its own. */
+.transcript {
+  position: relative;
+  display: grid;
+  min-height: 0;
+  grid-template-rows: minmax(0, 1fr);
 }
 
 .conversation-pane > .channel-header + .join-channel {
@@ -1290,6 +1312,78 @@ button:disabled {
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-color: #d9d0dc transparent;
+}
+
+/* Sits where the channel intro would be, so reaching the true start of a
+   channel is what makes the intro appear. */
+.history-top {
+  display: flex;
+  width: calc(100% - var(--gutter) * 2);
+  min-height: 30px;
+  margin: 2px var(--gutter) var(--s-sm);
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: var(--ink-mute);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-pill);
+  background: var(--canvas);
+  font: var(--text-caption);
+  letter-spacing: var(--track-caption);
+  transition:
+    color var(--motion),
+    border-color var(--motion);
+}
+
+.history-top:hover:not(:disabled) {
+  color: var(--primary);
+  border-color: var(--primary-tint);
+}
+
+.day-divider {
+  display: flex;
+  margin: var(--s-md) var(--gutter) var(--s-sm);
+  align-items: center;
+  gap: var(--s-sm);
+}
+
+.day-divider::before,
+.day-divider::after {
+  height: 1px;
+  flex: 1;
+  background: var(--hairline);
+  content: "";
+}
+
+.day-divider > span {
+  color: var(--ink-mute);
+  font: var(--text-caption);
+  font-weight: 700;
+  letter-spacing: var(--track-caption);
+}
+
+.jump-latest {
+  position: absolute;
+  z-index: 12;
+  bottom: 10px;
+  left: 50%;
+  display: flex;
+  min-height: 30px;
+  padding: 0 14px;
+  align-items: center;
+  gap: 5px;
+  color: var(--on-primary);
+  border-radius: var(--r-pill);
+  background: var(--primary);
+  box-shadow: var(--elev-3);
+  font-size: 12px;
+  font-weight: 700;
+  transform: translateX(-50%);
+  transition: background var(--motion);
+}
+
+.jump-latest:hover {
+  background: var(--primary-press);
 }
 
 /* Channel intro is a hero band: mesh backdrop, icon floating above it */
@@ -1576,6 +1670,13 @@ button:disabled {
   box-shadow: inset 0 0 0 1px var(--cream-line);
 }
 
+.status-hint {
+  margin-top: 3px;
+  color: var(--ink-mute);
+  font: var(--text-caption);
+  letter-spacing: var(--track-caption);
+}
+
 .message-status.status-failed {
   color: var(--semantic-error);
   background: var(--error-soft);
@@ -1800,6 +1901,13 @@ button:disabled {
   font-size: 11px;
 }
 
+.composer-hint {
+  padding: 4px 11px 6px;
+  color: var(--ink-mute);
+  border-top: 1px solid var(--hairline);
+  font-size: 11px;
+}
+
 .mention-menu {
   position: absolute;
   z-index: 15;
@@ -1823,8 +1931,10 @@ button:disabled {
   text-align: left;
 }
 
-.mention-menu > button:hover {
+.mention-menu > button:hover,
+.mention-menu > button.active {
   background: var(--canvas-lavender);
+  box-shadow: inset 0 0 0 1px var(--lavender-line);
 }
 
 .mention-menu > button > span:nth-child(2) {

@@ -5,7 +5,7 @@ import {
   Bot,
   Check,
   ChevronDown,
-  CirclePlus,
+  Copy,
   Download,
   ExternalLink,
   Globe2,
@@ -15,7 +15,6 @@ import {
   LogOut,
   Menu,
   MessageCircle,
-  MoreHorizontal,
   Pencil,
   Plus,
   RefreshCw,
@@ -23,14 +22,21 @@ import {
   Send,
   Settings,
   ShieldCheck,
-  SmilePlus,
   Sparkles,
   Square,
   Users,
   X,
   Zap,
 } from "lucide-react";
-import React, { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  FormEvent,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import ReactMarkdown from "react-markdown";
 
 type Locale = "zh" | "en";
@@ -44,6 +50,7 @@ type Channel = {
   joined: boolean;
   role: "manager" | "member" | null;
   unread: boolean;
+  unreadCount: number;
   latestMessageId: number;
   memberCount: number;
   agentCount: number;
@@ -111,6 +118,8 @@ type Bootstrap = {
   agents?: Agent[];
 };
 type Modal = "channel" | "people" | "agents" | "account" | null;
+/** Composer seed; `nonce` makes repeat inserts of the same handle distinct. */
+type Prefill = { text: string; nonce: number };
 
 const copy = {
   zh: {
@@ -214,6 +223,17 @@ const copy = {
     close: "关闭",
     searchChannels: "筛选频道",
     saved: "已保存",
+    jumpLatest: "跳到最新",
+    newMessages: (n: number) => `${n} 条新消息`,
+    loadOlder: "加载更早的消息",
+    loadingOlder: "正在加载更早的消息…",
+    today: "今天",
+    yesterday: "昨天",
+    copyMessage: "复制内容",
+    copied: "已复制",
+    continueRun: "继续这个任务",
+    inputRequiredHint: "再 @ 它一次，就会接着同一个任务继续。",
+    unknownMention: (handle: string) => `@${handle} 不在这个频道，不会触发任何 Agent。`,
   },
   en: {
     welcome: "Welcome back to the work",
@@ -316,6 +336,17 @@ const copy = {
     close: "Close",
     searchChannels: "Filter channels",
     saved: "Saved",
+    jumpLatest: "Jump to latest",
+    newMessages: (n: number) => `${n} new message${n === 1 ? "" : "s"}`,
+    loadOlder: "Load earlier messages",
+    loadingOlder: "Loading earlier messages…",
+    today: "Today",
+    yesterday: "Yesterday",
+    copyMessage: "Copy text",
+    copied: "Copied",
+    continueRun: "Continue this task",
+    inputRequiredHint: "Mention it again and it picks up the same task.",
+    unknownMention: (handle: string) => `@${handle} is not in this channel — no agent will run.`,
   },
 } as const;
 
@@ -350,6 +381,38 @@ function upsertMessage(list: Message[], message: Message): Message[] {
   return copyList;
 }
 
+const BOTTOM_THRESHOLD = 80;
+
+function dayKey(iso: string): string {
+  return new Date(iso).toDateString();
+}
+
+function dayLabel(iso: string, locale: Locale): string {
+  const date = new Date(iso);
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+  if (dayKey(iso) === today.toDateString()) return copy[locale].today;
+  if (dayKey(iso) === yesterday.toDateString()) return copy[locale].yesterday;
+  return new Intl.DateTimeFormat(locale === "zh" ? "zh-CN" : "en-GB", {
+    weekday: "short",
+    month: "long",
+    day: "numeric",
+    ...(date.getFullYear() === today.getFullYear() ? {} : { year: "numeric" }),
+  }).format(date);
+}
+
+/**
+ * Two passes: the synchronous one wins the common case, the frame-later one
+ * catches Markdown that settles its own height after commit.
+ */
+function pinToBottom(node: HTMLElement): void {
+  node.scrollTop = node.scrollHeight;
+  window.requestAnimationFrame(() => {
+    node.scrollTop = node.scrollHeight;
+  });
+}
+
 export function TeamAgentsApp() {
   const [locale, setLocale] = useState<Locale>("zh");
   const t = copy[locale];
@@ -367,6 +430,20 @@ export function TeamAgentsApp() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [channelFilter, setChannelFilter] = useState("");
   const eventCursor = useRef(0);
+  const messageScroll = useRef<HTMLDivElement>(null);
+  // Follow new output only while the reader is already at the bottom, so
+  // scrolling up to read history is never yanked away by a streaming agent.
+  const stickToBottom = useRef(true);
+  // Scroll position captured before an older page is prepended, so the layout
+  // effect can keep the reader on the message they were reading.
+  const restoreAnchor = useRef<{ top: number; height: number } | null>(null);
+  const readCursor = useRef(0);
+  const [followingLatest, setFollowingLatest] = useState(true);
+  const [missedCount, setMissedCount] = useState(0);
+  const [hasOlder, setHasOlder] = useState(false);
+  const [olderPending, setOlderPending] = useState(false);
+  const [prefill, setPrefill] = useState<Prefill | null>(null);
+  const [threadPrefill, setThreadPrefill] = useState<Prefill | null>(null);
 
   const refreshBootstrap = useCallback(async () => {
     const data = await api<Bootstrap>("/api/bootstrap");
@@ -375,6 +452,25 @@ export function TeamAgentsApp() {
       setSelectedChannelId((current) => current || data.channels?.find((channel) => channel.joined)?.id || data.channels?.[0].id || "");
     }
     return data;
+  }, []);
+
+  // Clears the badge locally as well as on the server: the sidebar polls
+  // bootstrap, and waiting a whole poll cycle to drop a dot you just read looks
+  // like the app lost track of you.
+  const markRead = useCallback(async (channelId: string, messageId: number) => {
+    if (!channelId || !messageId) return;
+    setBoot((current) => {
+      if (!current?.channels) return current;
+      return {
+        ...current,
+        channels: current.channels.map((channel) =>
+          channel.id === channelId ? { ...channel, unread: false, unreadCount: 0 } : channel),
+      };
+    });
+    await api(`/api/channels/${encodeURIComponent(channelId)}/read`, {
+      method: "POST",
+      body: JSON.stringify({ messageId }),
+    }).catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -399,30 +495,106 @@ export function TeamAgentsApp() {
     if (!channelId || !boot?.authenticated) return;
     setLoadingChannel(true);
     setError("");
+    // A fresh channel always opens pinned to the newest message.
+    stickToBottom.current = true;
+    restoreAnchor.current = null;
+    setFollowingLatest(true);
+    setMissedCount(0);
     try {
       const [messageData, rosterData] = await Promise.all([
-        api<{ messages: Message[]; requiresJoin: boolean }>(`/api/channels/${encodeURIComponent(channelId)}/messages`),
+        api<{ messages: Message[]; hasMore?: boolean; requiresJoin: boolean }>(`/api/channels/${encodeURIComponent(channelId)}/messages`),
         api<{ members: RosterUser[]; agents: RosterAgent[] }>(`/api/channels/${encodeURIComponent(channelId)}/roster`),
       ]);
       setMessages(messageData.messages);
+      setHasOlder(Boolean(messageData.hasMore));
       setRequiresJoin(messageData.requiresJoin);
       setRosterUsers(rosterData.members);
       setRosterAgents(rosterData.agents);
       setThreadRoot(null);
       setThreadMessages([]);
       const latest = messageData.messages.at(-1)?.id ?? 0;
-      if (latest) {
-        await api(`/api/channels/${encodeURIComponent(channelId)}/read`, {
-          method: "POST",
-          body: JSON.stringify({ messageId: latest }),
-        });
-      }
+      readCursor.current = latest;
+      if (latest) await markRead(channelId, latest);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setLoadingChannel(false);
     }
-  }, [boot?.authenticated]);
+  }, [boot?.authenticated, markRead]);
+
+  const loadOlder = useCallback(async () => {
+    const node = messageScroll.current;
+    const oldest = messages[0]?.id;
+    if (!node || !oldest || !hasOlder || olderPending || !selectedChannelId) return;
+    setOlderPending(true);
+    restoreAnchor.current = { top: node.scrollTop, height: node.scrollHeight };
+    try {
+      const data = await api<{ messages: Message[]; hasMore?: boolean }>(
+        `/api/channels/${encodeURIComponent(selectedChannelId)}/messages?before=${oldest}`,
+      );
+      setHasOlder(Boolean(data.hasMore));
+      setMessages((current) => {
+        const known = new Set(current.map((message) => message.id));
+        return [...data.messages.filter((message) => !known.has(message.id)), ...current];
+      });
+    } catch (cause) {
+      restoreAnchor.current = null;
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setOlderPending(false);
+    }
+  }, [messages, hasOlder, olderPending, selectedChannelId]);
+
+  // Anchor restore takes priority over follow-the-latest: a prepended page must
+  // never be mistaken for new output at the bottom.
+  useLayoutEffect(() => {
+    const node = messageScroll.current;
+    if (!node) return;
+    const anchor = restoreAnchor.current;
+    if (anchor) {
+      restoreAnchor.current = null;
+      // Assigned, not incremented: browsers that implement CSS scroll anchoring
+      // have already shifted scrollTop by this same delta, and Safari has not.
+      // Setting the absolute target lands correctly either way.
+      node.scrollTop = anchor.top + (node.scrollHeight - anchor.height);
+      return;
+    }
+    if (stickToBottom.current) {
+      pinToBottom(node);
+      setMissedCount(0);
+    }
+  }, [messages, loadingChannel]);
+
+  // A reflow — window resize, phone rotation, the thread pane opening — changes
+  // content height and would drift a pinned reader off the newest message.
+  useEffect(() => {
+    const node = messageScroll.current;
+    if (!node || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      if (stickToBottom.current) pinToBottom(node);
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [selectedChannelId, requiresJoin, loadingChannel]);
+
+  const handleMessageScroll = useCallback(() => {
+    const node = messageScroll.current;
+    if (!node) return;
+    const atBottom = node.scrollHeight - node.scrollTop - node.clientHeight < BOTTOM_THRESHOLD;
+    stickToBottom.current = atBottom;
+    setFollowingLatest(atBottom);
+    if (atBottom) setMissedCount(0);
+    if (node.scrollTop < 160) void loadOlder();
+  }, [loadOlder]);
+
+  const scrollToLatest = useCallback(() => {
+    const node = messageScroll.current;
+    if (!node) return;
+    stickToBottom.current = true;
+    setFollowingLatest(true);
+    setMissedCount(0);
+    pinToBottom(node);
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -438,8 +610,20 @@ export function TeamAgentsApp() {
     if (!selectedChannelId || requiresJoin || !boot?.authenticated) return;
     let socket: WebSocket | null = null;
     let reconnectTimer = 0;
+    let readTimer = 0;
     let closed = false;
     let attempt = 0;
+    // Only count as read what the reader could actually have seen: the tab is
+    // in front and they are sitting at the bottom of the transcript.
+    const noteRead = (messageId: number) => {
+      if (messageId <= readCursor.current) return;
+      if (document.visibilityState !== "visible" || !stickToBottom.current) return;
+      readCursor.current = messageId;
+      window.clearTimeout(readTimer);
+      readTimer = window.setTimeout(() => {
+        void markRead(selectedChannelId, readCursor.current);
+      }, 1_200);
+    };
     const connect = () => {
       if (closed) return;
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -458,6 +642,10 @@ export function TeamAgentsApp() {
           eventCursor.current = Math.max(eventCursor.current, payload.eventId);
           if (["message.created", "message.updated", "reaction.updated"].includes(payload.kind)) {
             const message = payload.data as Message;
+            noteRead(message.id);
+            if (payload.kind === "message.created" && !message.threadRootId && !stickToBottom.current) {
+              setMissedCount((current) => current + 1);
+            }
             if (message.threadRootId) {
               setThreadMessages((current) => upsertMessage(current, message));
               setMessages((current) => current.map((candidate) =>
@@ -490,9 +678,45 @@ export function TeamAgentsApp() {
       closed = true;
       window.clearInterval(ping);
       window.clearTimeout(reconnectTimer);
+      window.clearTimeout(readTimer);
       socket?.close();
     };
-  }, [selectedChannelId, requiresJoin, boot?.authenticated, loadChannel, refreshBootstrap]);
+  }, [selectedChannelId, requiresJoin, boot?.authenticated, loadChannel, refreshBootstrap, markRead]);
+
+  // The channel socket only carries the open channel, so activity anywhere else
+  // is invisible without this. Polling keeps the sidebar and the tab title
+  // honest while the reader waits on a long agent run somewhere else.
+  useEffect(() => {
+    if (!boot?.authenticated) return;
+    const sync = () => {
+      if (document.visibilityState !== "visible") return;
+      refreshBootstrap().catch(() => undefined);
+    };
+    const timer = window.setInterval(sync, 20_000);
+    document.addEventListener("visibilitychange", sync);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", sync);
+    };
+  }, [boot?.authenticated, refreshBootstrap]);
+
+  const unreadElsewhere = (boot?.channels ?? []).reduce(
+    (sum, channel) => sum + (channel.id === selectedChannelId ? 0 : channel.unreadCount),
+    0,
+  );
+
+  useEffect(() => {
+    document.title = unreadElsewhere > 0 ? `(${unreadElsewhere}) Team Agents` : "Team Agents";
+  }, [unreadElsewhere]);
+
+  const mentionInComposer = useCallback((handle: string, inThread: boolean) => {
+    const seed = (current: Prefill | null): Prefill => ({
+      text: `@${handle} `,
+      nonce: (current?.nonce ?? 0) + 1,
+    });
+    if (inThread) setThreadPrefill(seed);
+    else setPrefill(seed);
+  }, []);
 
   const openThread = async (message: Message) => {
     setThreadRoot(message);
@@ -545,10 +769,6 @@ export function TeamAgentsApp() {
         </div>
 
         <nav className="primary-nav">
-          <button className="nav-row">
-            <MessageCircle size={17} />
-            <span>{t.threads}</span>
-          </button>
           <button className="nav-row" onClick={() => setModal("agents")}>
             <Bot size={17} />
             <span>{t.agents}</span>
@@ -572,20 +792,26 @@ export function TeamAgentsApp() {
             />
           </label>
           <div className="channel-list">
-            {filteredChannels.map((channel) => (
-              <button
-                key={channel.id}
-                className={`channel-row ${channel.id === selectedChannelId ? "active" : ""}`}
-                onClick={() => {
-                  setSelectedChannelId(channel.id);
-                  setSidebarOpen(false);
-                }}
-              >
-                {channel.isPrivate ? <LockKeyhole size={14} /> : <Hash size={15} />}
-                <span>{channel.name}</span>
-                {channel.unread && <i className="unread-dot" />}
-              </button>
-            ))}
+            {filteredChannels.map((channel) => {
+              const active = channel.id === selectedChannelId;
+              const unread = active ? 0 : channel.unreadCount;
+              return (
+                <button
+                  key={channel.id}
+                  className={`channel-row ${active ? "active" : ""} ${unread ? "has-unread" : ""}`}
+                  onClick={() => {
+                    setSelectedChannelId(channel.id);
+                    setSidebarOpen(false);
+                  }}
+                >
+                  {channel.isPrivate ? <LockKeyhole size={14} /> : <Hash size={15} />}
+                  <span>{channel.name}</span>
+                  {unread > 0 && (
+                    <i className="unread-count">{unread > 99 ? "99+" : unread}</i>
+                  )}
+                </button>
+              );
+            })}
           </div>
         </div>
 
@@ -632,7 +858,6 @@ export function TeamAgentsApp() {
                   <Bot size={16} />
                   <span>{selectedChannel.agentCount}</span>
                 </button>
-                <button className="icon-button"><MoreHorizontal size={19} /></button>
               </div>
             </header>
 
@@ -655,27 +880,57 @@ export function TeamAgentsApp() {
               />
             ) : (
               <>
-                <div className="message-scroll">
-                  <ChannelIntro channel={selectedChannel} locale={locale} />
-                  {loadingChannel ? (
-                    <div className="inline-loader"><RefreshCw className="spin" size={18} /> Loading channel…</div>
-                  ) : messages.length ? (
-                    messages.map((message) => (
-                      <MessageCard
-                        key={message.id}
-                        message={message}
-                        currentUser={boot.user!}
-                        locale={locale}
-                        onThread={() => openThread(message)}
-                        onReact={(emoji) => reactToMessage(message.id, emoji, selectedChannel.id, setMessages, setError)}
-                        onRunAction={(action) => runAction(message, action, setError)}
-                      />
-                    ))
-                  ) : (
-                    <div className="empty-messages">
-                      <MessageCircle size={30} />
-                      <p>{t.noMessages}</p>
-                    </div>
+                <div className="transcript">
+                  <div className="message-scroll" ref={messageScroll} onScroll={handleMessageScroll}>
+                    {hasOlder ? (
+                      <button
+                        className="history-top"
+                        onClick={() => void loadOlder()}
+                        disabled={olderPending}
+                      >
+                        <RefreshCw className={olderPending ? "spin" : ""} size={14} />
+                        {olderPending ? t.loadingOlder : t.loadOlder}
+                      </button>
+                    ) : (
+                      <ChannelIntro channel={selectedChannel} locale={locale} />
+                    )}
+                    {loadingChannel ? (
+                      <div className="inline-loader"><RefreshCw className="spin" size={18} /> Loading channel…</div>
+                    ) : messages.length ? (
+                      messages.map((message, index) => {
+                        const previous = messages[index - 1];
+                        const newDay = !previous || dayKey(previous.createdAt) !== dayKey(message.createdAt);
+                        return (
+                          <React.Fragment key={message.id}>
+                            {newDay && (
+                              <div className="day-divider">
+                                <span>{dayLabel(message.createdAt, locale)}</span>
+                              </div>
+                            )}
+                            <MessageCard
+                              message={message}
+                              currentUser={boot.user!}
+                              locale={locale}
+                              onThread={() => openThread(message)}
+                              onReact={(emoji) => reactToMessage(message.id, emoji, selectedChannel.id, setMessages, setError)}
+                              onRunAction={(action) => runAction(message, action, setError)}
+                              onMention={(handle) => mentionInComposer(handle, false)}
+                            />
+                          </React.Fragment>
+                        );
+                      })
+                    ) : (
+                      <div className="empty-messages">
+                        <MessageCircle size={30} />
+                        <p>{t.noMessages}</p>
+                      </div>
+                    )}
+                  </div>
+                  {!followingLatest && (
+                    <button className="jump-latest" onClick={scrollToLatest}>
+                      <ChevronDown size={15} />
+                      {missedCount > 0 ? t.newMessages(missedCount) : t.jumpLatest}
+                    </button>
                   )}
                 </div>
                 <Composer
@@ -683,7 +938,13 @@ export function TeamAgentsApp() {
                   locale={locale}
                   rosterUsers={rosterUsers}
                   rosterAgents={rosterAgents}
-                  onSent={(message) => setMessages((current) => upsertMessage(current, message))}
+                  prefill={prefill}
+                  onSent={(message) => {
+                    // Sending is an explicit intent to be at the bottom.
+                    stickToBottom.current = true;
+                    setFollowingLatest(true);
+                    setMessages((current) => upsertMessage(current, message));
+                  }}
                 />
               </>
             )}
@@ -717,6 +978,7 @@ export function TeamAgentsApp() {
               onThread={() => undefined}
               onReact={(emoji) => reactToMessage(threadRoot.id, emoji, selectedChannel.id, setMessages, setError)}
               onRunAction={(action) => runAction(threadRoot, action, setError)}
+              onMention={(handle) => mentionInComposer(handle, true)}
             />
             <div className="thread-divider">
               <span>{threadMessages.length} {locale === "zh" ? "条回复" : "replies"}</span>
@@ -731,6 +993,7 @@ export function TeamAgentsApp() {
                 onThread={() => undefined}
                 onReact={(emoji) => reactToMessage(message.id, emoji, selectedChannel.id, setThreadMessages, setError)}
                 onRunAction={(action) => runAction(message, action, setError)}
+                onMention={(handle) => mentionInComposer(handle, true)}
               />
             ))}
           </div>
@@ -740,6 +1003,7 @@ export function TeamAgentsApp() {
             rosterUsers={rosterUsers}
             rosterAgents={rosterAgents}
             threadRootId={threadRoot.id}
+            prefill={threadPrefill}
             onSent={(message) => setThreadMessages((current) => upsertMessage(current, message))}
           />
         </aside>
@@ -945,14 +1209,25 @@ function MessageCard(props: {
   onThread: () => void;
   onReact: (emoji: string) => void;
   onRunAction: (action: "cancel" | "retry") => void;
+  onMention: (handle: string) => void;
   compact?: boolean;
   isThreadRoot?: boolean;
 }) {
-  const { message, currentUser, locale, onThread, onReact, onRunAction, compact, isThreadRoot } = props;
+  const { message, currentUser, locale, onThread, onReact, onRunAction, onMention, compact, isThreadRoot } = props;
   const t = copy[locale];
+  const [copied, setCopied] = useState(false);
   const agent = message.sender.type === "agent";
   const system = message.sender.type === "system";
   const running = ["queued", "streaming"].includes(message.status);
+  const copyContent = async () => {
+    try {
+      await navigator.clipboard.writeText(message.content);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1_500);
+    } catch {
+      // Clipboard permission denied — nothing useful to say, the text is on screen.
+    }
+  };
   const canManageRun = Boolean(message.runId) && (
     message.runTriggeredByUserId === currentUser.id
     || message.agentOwnerUserId === currentUser.id
@@ -992,7 +1267,13 @@ function MessageCard(props: {
             </span>
             {canManageRun && running && <button onClick={() => onRunAction("cancel")}>{t.stop}</button>}
             {canManageRun && ["failed", "canceled"].includes(message.status) && <button onClick={() => onRunAction("retry")}>{t.retry}</button>}
+            {message.status === "input-required" && message.sender.handle && (
+              <button onClick={() => onMention(message.sender.handle!)}>{t.continueRun}</button>
+            )}
           </div>
+        )}
+        {message.status === "input-required" && (
+          <p className="status-hint">{t.inputRequiredHint}</p>
         )}
         <div className="message-reactions">
           {message.reactions.map((reaction) => (
@@ -1014,7 +1295,13 @@ function MessageCard(props: {
       <div className="message-hover-actions">
         {["👍", "❤️", "👀"].map((emoji) => <button key={emoji} onClick={() => onReact(emoji)}>{emoji}</button>)}
         {!isThreadRoot && <button onClick={onThread} title={t.reply}><MessageCircle size={15} /></button>}
-        <button title="More"><MoreHorizontal size={15} /></button>
+        <button
+          title={copied ? t.copied : t.copyMessage}
+          aria-label={copied ? t.copied : t.copyMessage}
+          onClick={() => void copyContent()}
+        >
+          {copied ? <Check size={15} /> : <Copy size={15} />}
+        </button>
       </div>
     </article>
   );
@@ -1026,13 +1313,22 @@ function Composer(props: {
   rosterUsers: RosterUser[];
   rosterAgents: RosterAgent[];
   threadRootId?: number;
+  prefill?: Prefill | null;
   onSent: (message: Message) => void;
 }) {
-  const { channel, locale, rosterUsers, rosterAgents, threadRootId, onSent } = props;
+  const { channel, locale, rosterUsers, rosterAgents, threadRootId, prefill, onSent } = props;
   const t = copy[locale];
   const [value, setValue] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
+  // Keyed by the query it belongs to, so a changed query resets the highlight
+  // without an effect round-trip.
+  const [mentionCursor, setMentionCursor] = useState<{ query: string | null; index: number }>({
+    query: null,
+    index: 0,
+  });
+  const [mentionDismissed, setMentionDismissed] = useState(false);
+  const [appliedPrefill, setAppliedPrefill] = useState(0);
   const textarea = useRef<HTMLTextAreaElement>(null);
   const mentionMatch = value.match(/(?:^|\s)@([\w-]*)$/);
   const mentionQuery = mentionMatch?.[1]?.toLowerCase() ?? null;
@@ -1047,10 +1343,44 @@ function Composer(props: {
         .map((user) => ({ id: user.id, label: user.username, handle: user.username, kind: "user" as const })),
     ].slice(0, 7);
   }, [mentionQuery, rosterAgents, rosterUsers]);
+  const menuOpen = mentionOptions.length > 0 && !mentionDismissed;
+  const mentionIndex = mentionCursor.query === mentionQuery ? mentionCursor.index : 0;
+  const moveMention = (step: number) => {
+    setMentionCursor({
+      query: mentionQuery,
+      index: (mentionIndex + step + mentionOptions.length) % mentionOptions.length,
+    });
+  };
+  // Adjusting state from a changed prop during render, rather than in an effect,
+  // keeps the seeded draft in the very first paint.
+  if (prefill && prefill.nonce !== appliedPrefill) {
+    setAppliedPrefill(prefill.nonce);
+    setValue((current) => {
+      if (current.trimEnd().endsWith(prefill.text.trim())) return current;
+      return `${current}${current && !current.endsWith(" ") ? " " : ""}${prefill.text}`;
+    });
+  }
+  useEffect(() => {
+    if (appliedPrefill) textarea.current?.focus();
+  }, [appliedPrefill]);
   const chooseMention = (option: typeof mentionOptions[number]) => {
     setValue((current) => current.replace(/@[\w-]*$/, `@${option.handle} `));
     window.setTimeout(() => textarea.current?.focus(), 0);
   };
+  // A handle nobody in this channel answers to would post as plain text and
+  // silently start no run at all, so it gets called out before send.
+  const unresolvedMention = useMemo(() => {
+    const known = new Set([
+      ...rosterAgents.map((agent) => agent.handle.toLowerCase()),
+      ...rosterUsers.map((user) => user.username.toLowerCase()),
+    ]);
+    for (const match of value.matchAll(/(?:^|\s)@([\w-]{2,})/g)) {
+      const stillTyping = (match.index ?? 0) + match[0].length === value.length && mentionQuery !== null;
+      if (stillTyping) continue;
+      if (!known.has(match[1].toLowerCase())) return match[1];
+    }
+    return null;
+  }, [value, mentionQuery, rosterAgents, rosterUsers]);
   const submit = async () => {
     if (!value.trim() || sending) return;
     setSending(true);
@@ -1087,10 +1417,15 @@ function Composer(props: {
   };
   return (
     <div className={`composer ${threadRootId ? "thread-composer" : ""}`}>
-      {mentionOptions.length > 0 && (
+      {menuOpen && (
         <div className="mention-menu">
-          {mentionOptions.map((option) => (
-            <button key={`${option.kind}:${option.id}`} onClick={() => chooseMention(option)}>
+          {mentionOptions.map((option, index) => (
+            <button
+              key={`${option.kind}:${option.id}`}
+              className={index === mentionIndex ? "active" : ""}
+              onMouseEnter={() => setMentionCursor({ query: mentionQuery, index })}
+              onClick={() => chooseMention(option)}
+            >
               <Avatar name={option.label} agent={option.kind === "agent"} />
               <span><strong>{option.label}</strong><small>@{option.handle}</small></span>
               {option.kind === "agent" && <span className="agent-badge">AGENT</span>}
@@ -1103,8 +1438,30 @@ function Composer(props: {
         value={value}
         rows={1}
         placeholder={threadRootId ? t.threadPlaceholder : `${t.messagePlaceholder} #${channel.name}`}
-        onChange={(event) => setValue(event.target.value)}
+        onChange={(event) => {
+          setValue(event.target.value);
+          setMentionDismissed(false);
+        }}
         onKeyDown={(event) => {
+          // While the mention menu is up it owns the arrows and Enter, which is
+          // what every chat client trains people to expect.
+          if (menuOpen) {
+            if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+              event.preventDefault();
+              moveMention(event.key === "ArrowDown" ? 1 : -1);
+              return;
+            }
+            if (event.key === "Enter" || event.key === "Tab") {
+              event.preventDefault();
+              chooseMention(mentionOptions[Math.min(mentionIndex, mentionOptions.length - 1)]);
+              return;
+            }
+            if (event.key === "Escape") {
+              event.preventDefault();
+              setMentionDismissed(true);
+              return;
+            }
+          }
           if (event.key === "Enter" && !event.shiftKey) {
             event.preventDefault();
             submit();
@@ -1113,17 +1470,26 @@ function Composer(props: {
       />
       <div className="composer-toolbar">
         <div>
-          <button><CirclePlus size={19} /></button>
-          <button onClick={() => setValue((current) => `${current}${current ? " " : ""}@`)}>
+          <button
+            title={t.mentionHint}
+            aria-label={t.mentionHint}
+            onClick={() => {
+              setValue((current) => `${current}${current && !current.endsWith(" ") ? " " : ""}@`);
+              setMentionDismissed(false);
+              textarea.current?.focus();
+            }}
+          >
             <AtSign size={18} />
           </button>
-          <button><SmilePlus size={18} /></button>
           <span>{t.mentionHint}</span>
         </div>
         <button className="send-button" disabled={!value.trim() || sending} onClick={submit} aria-label={t.send}>
           {sending ? <RefreshCw className="spin" size={17} /> : <Send size={17} />}
         </button>
       </div>
+      {unresolvedMention && !error && (
+        <div className="composer-hint">{t.unknownMention(unresolvedMention)}</div>
+      )}
       {error && <div className="composer-error">{error}</div>}
     </div>
   );
@@ -1154,10 +1520,30 @@ function JoinChannel({ channel, locale, onJoin }: { channel: Channel; locale: Lo
 }
 
 function ModalShell(props: { title: string; subtitle?: string; onClose: () => void; children: React.ReactNode; wide?: boolean }) {
+  const card = useRef<HTMLElement>(null);
+  const { onClose } = props;
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+  useEffect(() => {
+    // Respect a field that already claimed focus via autoFocus.
+    if (!card.current?.contains(document.activeElement)) card.current?.focus();
+  }, []);
   return (
     <div className="modal-layer">
       <button className="modal-scrim" onClick={props.onClose} aria-label="Close" />
-      <section className={`modal-card ${props.wide ? "wide" : ""}`}>
+      <section
+        ref={card}
+        tabIndex={-1}
+        role="dialog"
+        aria-modal="true"
+        aria-label={props.title}
+        className={`modal-card ${props.wide ? "wide" : ""}`}
+      >
         <header>
           <div><h2>{props.title}</h2>{props.subtitle && <p>{props.subtitle}</p>}</div>
           <button className="icon-button" onClick={props.onClose}><X size={18} /></button>
