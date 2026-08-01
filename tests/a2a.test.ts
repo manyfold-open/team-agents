@@ -47,6 +47,43 @@ describe("A2A v0.3 event parsing", () => {
     });
   });
 
+  it("keeps status narration as progress once an artifact exists", () => {
+    const result = parseA2AEventsForTest([
+      {
+        kind: "status-update",
+        taskId: "task-2",
+        status: {
+          state: "working",
+          message: { kind: "message", role: "agent", parts: [{ kind: "text", text: "Reading the docs…" }] },
+        },
+      },
+      {
+        kind: "artifact-update",
+        taskId: "task-2",
+        artifact: { artifactId: "answer", parts: [{ kind: "text", text: "Here is the summary." }] },
+      },
+    ]);
+
+    // The narration used to be dropped the moment output arrived, which left a
+    // long run with no progress signal at all.
+    expect(result.text).toBe("Here is the summary.");
+    expect(result.progressText).toBe("Reading the docs…");
+  });
+
+  it("does not repeat the narration as progress when it is the whole answer", () => {
+    const result = parseA2AEventForTest({}, {
+      kind: "status-update",
+      taskId: "task-3",
+      status: {
+        state: "working",
+        message: { kind: "message", role: "agent", parts: [{ kind: "text", text: "Still thinking." }] },
+      },
+    });
+
+    expect(result.text).toBe("Still thinking.");
+    expect(result.progressText).toBe("");
+  });
+
   it("preserves input-required state and the Agent question", () => {
     const result = parseA2AEventForTest({}, {
       kind: "status-update",

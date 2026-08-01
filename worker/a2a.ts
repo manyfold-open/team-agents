@@ -36,6 +36,9 @@ interface RunRecord {
   remote_task_id: string | null;
   remote_context_id: string | null;
   attempt: number;
+  relay_group_id: string | null;
+  relay_index: number;
+  relay_total: number;
   created_at: string;
 }
 
@@ -51,6 +54,12 @@ interface StreamSnapshot {
   contextId: string | null;
   state: TaskState;
   text: string;
+  /**
+   * The agent's own `status.message` narration. Kept beside `text` rather than
+   * folded into it: once an artifact arrives it would otherwise be dropped, and
+   * that narration is the only progress signal a long run ever emits.
+   */
+  progressText: string;
   terminal: boolean;
   interrupted: boolean;
 }
@@ -375,6 +384,7 @@ async function handleAgentTask(job: AgentQueueMessage, env: Env): Promise<void> 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), STREAM_SEGMENT_MS);
   let latestText = "";
+  let latestProgress = "";
   let lastPersistedAt = 0;
   let snapshot: StreamSnapshot | null = null;
   try {
@@ -417,13 +427,13 @@ async function handleAgentTask(job: AgentQueueMessage, env: Env): Promise<void> 
     if (snapshot.taskId || snapshot.contextId) {
       await rememberRemoteIds(env, row, conversation.id, snapshot);
     }
-    if (snapshot.text && snapshot.text !== latestText) {
-      await persist(snapshot, true);
-    }
+    // `finishRun` writes the final content itself, so persisting first would
+    // only spend an extra write and an extra broadcast on a doomed value.
     if (snapshot.terminal) {
       await finishRun(env, row, conversation.id, snapshot);
       return;
     }
+    await persist(snapshot, true);
     await env.AGENT_TASKS.send(
       { kind: "resume", runId: row.id, queuedAt: new Date().toISOString() },
       { delaySeconds: 2 },
@@ -465,14 +475,27 @@ async function handleAgentTask(job: AgentQueueMessage, env: Env): Promise<void> 
       run.remote_context_id = value.contextId;
       await rememberRemoteIds(env, run, conversation.id, value);
     }
-    if (!value.text || value.text === latestText) return;
+    const progress = value.progressText.slice(0, 500);
+    const progressChanged = progress !== latestProgress;
+    const textChanged = Boolean(value.text) && value.text !== latestText;
+    if (!textChanged && !progressChanged) return;
     const now = Date.now();
     if (!force && now - lastPersistedAt < 350) return;
-    latestText = value.text.slice(0, 200_000);
     lastPersistedAt = now;
-    await env.DB.prepare(
-      "UPDATE messages SET content=?,status='streaming',updated_at=? WHERE id=?",
-    ).bind(latestText, new Date().toISOString(), run.response_message_id).run();
+    const statements: D1PreparedStatement[] = [];
+    if (textChanged) {
+      latestText = value.text.slice(0, 200_000);
+      statements.push(env.DB.prepare(
+        "UPDATE messages SET content=?,status='streaming',updated_at=? WHERE id=?",
+      ).bind(latestText, new Date().toISOString(), run.response_message_id));
+    }
+    if (progressChanged) {
+      latestProgress = progress;
+      statements.push(env.DB.prepare(
+        "UPDATE agent_runs SET progress_text=? WHERE id=?",
+      ).bind(progress || null, run.id));
+    }
+    await env.DB.batch(statements);
     const message = await getPublicMessage(env, run.response_message_id, "");
     if (message) await recordChannelEvent(env, run.channel_id, "message.updated", message);
   }
@@ -593,15 +616,53 @@ async function buildAgentPrompt(env: Env, run: RunRecord & AgentRecord): Promise
     return `[${message.created_at}] ${actor}: ${message.content}`;
   }).join("\n\n").slice(-80_000);
 
+  const handoff = await relayHandoff(env, run);
+
   return [
     "You are participating in a Team Agents channel with people and other agents.",
     "Respond to the final message as a helpful teammate. Use the language requested by the sender.",
     "Do not claim to have seen messages outside the transcript. Do not mention hidden credentials.",
+    ...(handoff
+      ? [
+        `You are agent ${run.relay_index + 1} of ${run.relay_total} in a relay on that final message.`,
+        "The teammates before you already answered it. Build on their work, correct it where it is",
+        "wrong, and do not repeat what they already covered.",
+      ]
+      : []),
     "",
     "--- Authorized conversation transcript ---",
     transcript,
     "--- End transcript ---",
+    ...(handoff ? ["", "--- Answers from earlier agents in this relay ---", handoff, "--- End earlier answers ---"] : []),
   ].join("\n");
+}
+
+/**
+ * The answers of the relay legs before this one. They sit after the trigger
+ * message, so the transcript window (`m.id < trigger_message_id`) cannot see
+ * them — without this a relay would be indistinguishable from running the same
+ * agents in parallel.
+ */
+async function relayHandoff(env: Env, run: RunRecord & AgentRecord): Promise<string> {
+  if (!run.relay_group_id || run.relay_index <= 0) return "";
+  const rows = await env.DB.prepare(
+    `SELECT a.name AS agent_name,a.handle AS agent_handle,m.content,r.status
+     FROM agent_runs r
+     JOIN agents a ON a.id=r.agent_id
+     JOIN messages m ON m.id=r.response_message_id
+     WHERE r.relay_group_id=? AND r.relay_index<?
+     ORDER BY r.relay_index ASC`,
+  ).bind(run.relay_group_id, run.relay_index).all<{
+    agent_name: string;
+    agent_handle: string;
+    content: string;
+    status: string;
+  }>();
+  return rows.results
+    .filter((row) => row.content.trim())
+    .map((row) => `@${row.agent_handle} (${row.agent_name}) [${row.status}]:\n${row.content}`)
+    .join("\n\n")
+    .slice(-40_000);
 }
 
 async function rememberRemoteIds(
@@ -672,7 +733,8 @@ async function finishRun(
   await env.DB.batch([
     env.DB.prepare(
       `UPDATE agent_runs SET status=?,remote_task_id=COALESCE(?,remote_task_id),
-       remote_context_id=COALESCE(?,remote_context_id),completed_at=? WHERE id=?`,
+       remote_context_id=COALESCE(?,remote_context_id),progress_text=NULL,
+       completed_at=? WHERE id=?`,
     ).bind(runStatus, snapshot.taskId, snapshot.contextId, now, run.id),
     env.DB.prepare(
       "UPDATE messages SET content=?,status=?,updated_at=? WHERE id=?",
@@ -694,6 +756,60 @@ async function finishRun(
     status: runStatus,
     responseMessageId: run.response_message_id,
   });
+  await advanceRelay(
+    env,
+    run,
+    runStatus === "completed" || runStatus === "failed" ? "handoff" : "stop",
+  );
+}
+
+const RELAY_SKIPPED_TEXT = "Skipped — the relay stopped before this agent's turn.";
+
+/**
+ * Moves a relay group forward. Relay agents answer one at a time, each handed
+ * the answers before it, so the next one can only start once this run reaches a
+ * terminal state.
+ *
+ * `handoff` after a completed *or* failed predecessor: a teammate reporting
+ * that it could not do its part is still context worth passing on. `stop` after
+ * a canceled or `input-required` one: the chain is now missing an input nobody
+ * supplied, so the rest is canceled with a reason instead of sitting queued
+ * forever.
+ */
+async function advanceRelay(
+  env: Env,
+  run: RunRecord,
+  outcome: "handoff" | "stop",
+): Promise<void> {
+  if (!run.relay_group_id) return;
+  const pending = await env.DB.prepare(
+    `SELECT id,response_message_id FROM agent_runs
+     WHERE relay_group_id=? AND relay_index>? AND status='queued'
+     ORDER BY relay_index ASC`,
+  ).bind(run.relay_group_id, run.relay_index).all<{
+    id: string;
+    response_message_id: number;
+  }>();
+  if (!pending.results.length) return;
+  if (outcome === "handoff") {
+    await env.AGENT_TASKS.send({
+      kind: "start",
+      runId: pending.results[0].id,
+      queuedAt: new Date().toISOString(),
+    });
+    return;
+  }
+  const now = new Date().toISOString();
+  await env.DB.batch(pending.results.flatMap((entry) => [
+    env.DB.prepare("UPDATE agent_runs SET status='canceled',completed_at=? WHERE id=?")
+      .bind(now, entry.id),
+    env.DB.prepare("UPDATE messages SET content=?,status='canceled',updated_at=? WHERE id=?")
+      .bind(RELAY_SKIPPED_TEXT, now, entry.response_message_id),
+  ]));
+  for (const entry of pending.results) {
+    const message = await getPublicMessage(env, entry.response_message_id, "");
+    if (message) await recordChannelEvent(env, run.channel_id, "message.updated", message);
+  }
 }
 
 async function failRun(env: Env, run: RunRecord, message: string): Promise<void> {
@@ -701,7 +817,7 @@ async function failRun(env: Env, run: RunRecord, message: string): Promise<void>
   const now = new Date().toISOString();
   await env.DB.batch([
     env.DB.prepare(
-      "UPDATE agent_runs SET status='failed',last_error=?,completed_at=? WHERE id=?",
+      "UPDATE agent_runs SET status='failed',last_error=?,progress_text=NULL,completed_at=? WHERE id=?",
     ).bind(safe, now, run.id),
     env.DB.prepare(
       "UPDATE messages SET content=?,status='failed',updated_at=? WHERE id=?",
@@ -715,6 +831,7 @@ async function failRun(env: Env, run: RunRecord, message: string): Promise<void>
     responseMessageId: run.response_message_id,
     error: safe,
   });
+  await advanceRelay(env, run, "handoff");
 }
 
 async function cancelRemoteRun(env: Env, run: RunRecord & AgentRecord): Promise<void> {
@@ -729,7 +846,7 @@ async function cancelRemoteRun(env: Env, run: RunRecord & AgentRecord): Promise<
   const now = new Date().toISOString();
   await env.DB.batch([
     env.DB.prepare(
-      "UPDATE agent_runs SET status='canceled',completed_at=? WHERE id=?",
+      "UPDATE agent_runs SET status='canceled',progress_text=NULL,completed_at=? WHERE id=?",
     ).bind(now, run.id),
     env.DB.prepare(
       "UPDATE messages SET status='canceled',updated_at=? WHERE id=?",
@@ -737,6 +854,12 @@ async function cancelRemoteRun(env: Env, run: RunRecord & AgentRecord): Promise<
   ]);
   const response = await getPublicMessage(env, run.response_message_id, "");
   if (response) await recordChannelEvent(env, run.channel_id, "message.updated", response);
+  await recordChannelEvent(env, run.channel_id, "agent.run.updated", {
+    id: run.id,
+    status: "canceled",
+    responseMessageId: run.response_message_id,
+  });
+  await advanceRelay(env, run, "stop");
 }
 
 async function getTaskSnapshot(
@@ -862,7 +985,7 @@ function createAccumulator(seed?: StreamSnapshot): StreamAccumulator {
     artifacts,
     order: seed?.text ? ["seed"] : [],
     directText: "",
-    statusText: "",
+    statusText: seed?.progressText ?? "",
     finalEventSeen: seed?.terminal ?? false,
   };
 }
@@ -918,6 +1041,9 @@ function snapshotFrom(accumulator: StreamAccumulator, interrupted: boolean): Str
     contextId: accumulator.contextId,
     state: accumulator.state,
     text,
+    // Suppressed when it is itself the answer, so the UI never shows the same
+    // sentence twice — once as progress and once as the reply.
+    progressText: text === accumulator.statusText ? "" : accumulator.statusText,
     terminal: TERMINAL.has(accumulator.state),
     interrupted,
   };
@@ -992,6 +1118,7 @@ export function parseA2AEventForTest(
     contextId: previous.contextId ?? null,
     state: normalizeState(previous.state),
     text: previous.text ?? "",
+    progressText: "",
     terminal: false,
     interrupted: false,
   });

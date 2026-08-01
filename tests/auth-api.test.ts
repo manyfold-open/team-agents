@@ -5,6 +5,7 @@ import type { Env } from "../worker/types";
 type MockStatement = {
   bind: (...values: unknown[]) => MockStatement;
   first: <T>() => Promise<T | null>;
+  all: <T>() => Promise<{ results: T[] }>;
   run: () => Promise<{ success: true }>;
 };
 
@@ -14,6 +15,9 @@ function createMockEnv(): Env {
       const statement: MockStatement = {
         bind: () => statement,
         first: async <T>() => null as T | null,
+        // `ensureSchema` probes `PRAGMA table_info` before adding columns, so a
+        // statement double that cannot answer `all()` fails every route.
+        all: async <T>() => ({ results: [] as T[] }),
         run: async () => ({ success: true }),
       };
       return statement;

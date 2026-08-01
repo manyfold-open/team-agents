@@ -57,10 +57,43 @@ export interface AgentInput {
   historyCount: number;
 }
 
+/**
+ * How several agents mentioned in one message answer.
+ * `parallel` — independent runs, none sees the others (the historical default).
+ * `relay` — one at a time, each handed the answers of the agents before it.
+ */
+export type AgentRunMode = "parallel" | "relay";
+
 export interface CreateMessageInput {
   clientMessageId: string;
   content: string;
   threadRootId?: number;
   mentions: Array<{ kind: "user" | "agent"; id: string }>;
+  agentMode?: AgentRunMode;
+}
+
+/** Run state carried alongside an agent message so the UI can show the wait. */
+export interface PublicRun {
+  id: string;
+  status: "queued" | "running" | "input-required" | "completed" | "failed" | "canceled";
+  attempt: number;
+  startedAt: string | null;
+  progressText: string | null;
+  relayIndex: number;
+  relayTotal: number;
+}
+
+/** One entry of the cross-channel run tray. */
+export interface UserRunSummary extends PublicRun {
+  channelId: string;
+  channelName: string;
+  agentId: string;
+  agentName: string;
+  agentHandle: string;
+  responseMessageId: number;
+  threadRootId: number | null;
+  createdAt: string;
+  completedAt: string | null;
+  lastError: string | null;
 }
 

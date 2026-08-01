@@ -146,6 +146,10 @@ export const SCHEMA_STATEMENTS = [
     remote_context_id TEXT,
     last_error TEXT,
     attempt INTEGER NOT NULL DEFAULT 0,
+    progress_text TEXT,
+    relay_group_id TEXT,
+    relay_index INTEGER NOT NULL DEFAULT 0,
+    relay_total INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
     started_at TEXT,
     completed_at TEXT,
@@ -153,6 +157,7 @@ export const SCHEMA_STATEMENTS = [
   )`,
   `CREATE INDEX IF NOT EXISTS agent_runs_conversation_idx
     ON agent_runs(agent_id, channel_id, thread_root_id, created_at)`,
+  `CREATE INDEX IF NOT EXISTS agent_runs_status_idx ON agent_runs(status, created_at)`,
   `CREATE TABLE IF NOT EXISTS auth_rate_limits (
     key TEXT PRIMARY KEY,
     window_started_at TEXT NOT NULL,
@@ -181,6 +186,44 @@ export const SCHEMA_STATEMENTS = [
     ON manyfold_connect_sessions(expires_at)`,
 ] as const;
 
+/**
+ * Columns added after a table shipped. `CREATE TABLE IF NOT EXISTS` is a no-op
+ * on a database that already has the table, so a new column would never reach
+ * production without this pass. SQLite has no `ADD COLUMN IF NOT EXISTS`, hence
+ * the `PRAGMA table_info` check rather than a swallowed error.
+ */
+export const ADDED_COLUMNS = [
+  { table: "agent_runs", column: "progress_text", ddl: "TEXT" },
+  { table: "agent_runs", column: "relay_group_id", ddl: "TEXT" },
+  { table: "agent_runs", column: "relay_index", ddl: "INTEGER NOT NULL DEFAULT 0" },
+  { table: "agent_runs", column: "relay_total", ddl: "INTEGER NOT NULL DEFAULT 1" },
+] as const;
+
+/**
+ * Indexes over columns from `ADDED_COLUMNS`. They cannot live in
+ * `SCHEMA_STATEMENTS`: on an already-deployed database that batch runs before
+ * the column exists, and `CREATE INDEX` on a missing column is a hard error.
+ */
+const POST_COLUMN_STATEMENTS = [
+  `CREATE INDEX IF NOT EXISTS agent_runs_relay_idx
+    ON agent_runs(relay_group_id, relay_index)`,
+] as const;
+
+async function addMissingColumns(db: D1Database): Promise<void> {
+  const tables = [...new Set(ADDED_COLUMNS.map((entry) => entry.table))];
+  const present = new Map<string, Set<string>>();
+  for (const table of tables) {
+    const info = await db.prepare(`PRAGMA table_info(${table})`).all<{ name: string }>();
+    present.set(table, new Set(info.results.map((row) => row.name)));
+  }
+  for (const entry of ADDED_COLUMNS) {
+    if (present.get(entry.table)?.has(entry.column)) continue;
+    await db.prepare(
+      `ALTER TABLE ${entry.table} ADD COLUMN ${entry.column} ${entry.ddl}`,
+    ).run();
+  }
+}
+
 let initialized: Promise<void> | null = null;
 
 export function ensureSchema(db: D1Database): Promise<void> {
@@ -190,6 +233,8 @@ export function ensureSchema(db: D1Database): Promise<void> {
       for (let index = 0; index < statements.length; index += 50) {
         await db.batch(statements.slice(index, index + 50));
       }
+      await addMissingColumns(db);
+      await db.batch(POST_COLUMN_STATEMENTS.map((sql) => db.prepare(sql)));
     })().catch((error) => {
       initialized = null;
       throw error;
