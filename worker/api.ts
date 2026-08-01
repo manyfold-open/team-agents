@@ -35,7 +35,14 @@ import {
   pollManyfoldConnect,
   startManyfoldConnect,
 } from "./manyfold";
-import type { AgentInput, AgentQueueMessage, AuthUser, CreateMessageInput, Env } from "./types";
+import type {
+  AgentInput,
+  AgentQueueMessage,
+  AuthUser,
+  CreateMessageInput,
+  Env,
+  UserRunSummary,
+} from "./types";
 
 const WORKSPACE_ID = "main";
 const ALLOWED_REACTIONS = new Set(["👍", "❤️", "🎉", "👀", "✅", "🤔"]);
@@ -324,14 +331,18 @@ async function changePassword(request: Request, env: Env): Promise<Response> {
 async function bootstrap(request: Request, env: Env): Promise<Response> {
   const user = await getAuthUser(request, env);
   if (!user) return json({ authenticated: false });
-  const channels = await listChannels(env, user);
-  const agents = await getAgentsForUser(env, user);
+  const [channels, agents, runs] = await Promise.all([
+    listChannels(env, user),
+    getAgentsForUser(env, user),
+    listUserRuns(env, user),
+  ]);
   return json({
     authenticated: true,
     user,
     workspace: { id: WORKSPACE_ID, name: "Team Agents" },
     channels,
     agents,
+    runs,
   });
 }
 
@@ -344,6 +355,14 @@ async function listChannels(env: Env, user: AuthUser): Promise<unknown[]> {
         WHERE m.channel_id=c.id
           AND m.id>COALESCE(rc.last_message_id,0)
           AND (m.sender_user_id IS NULL OR m.sender_user_id<>?)) AS unread_count,
+      (SELECT COUNT(*) FROM messages m
+        JOIN message_mentions mm
+          ON mm.message_id=m.id AND mm.kind='user' AND mm.target_id=?
+        WHERE m.channel_id=c.id
+          AND m.id>COALESCE(rc.last_message_id,0)
+          AND (m.sender_user_id IS NULL OR m.sender_user_id<>?)) AS mention_count,
+      (SELECT COUNT(*) FROM agent_runs ar
+        WHERE ar.channel_id=c.id AND ar.status IN ('queued','running')) AS active_run_count,
       (SELECT COUNT(*) FROM channel_members x WHERE x.channel_id=c.id) AS member_count,
       (SELECT COUNT(*) FROM channel_agents x WHERE x.channel_id=c.id) AS agent_count
      FROM channels c
@@ -352,7 +371,7 @@ async function listChannels(env: Env, user: AuthUser): Promise<unknown[]> {
      WHERE c.workspace_id='main' AND c.archived_at IS NULL
        AND (c.is_private=0 OR cm.user_id IS NOT NULL OR ?='owner')
      ORDER BY latest_message_id DESC,c.name COLLATE NOCASE`,
-  ).bind(user.id, user.id, user.id, user.role).all<{
+  ).bind(user.id, user.id, user.id, user.id, user.id, user.role).all<{
     id: string;
     name: string;
     slug: string;
@@ -362,6 +381,8 @@ async function listChannels(env: Env, user: AuthUser): Promise<unknown[]> {
     latest_message_id: number;
     last_read_id: number;
     unread_count: number;
+    mention_count: number;
+    active_run_count: number;
     member_count: number;
     agent_count: number;
   }>();
@@ -375,9 +396,76 @@ async function listChannels(env: Env, user: AuthUser): Promise<unknown[]> {
     role: row.member_role,
     unread: Number(row.unread_count) > 0,
     unreadCount: Number(row.unread_count),
+    mentionCount: Number(row.mention_count),
+    activeRunCount: Number(row.active_run_count),
     latestMessageId: Number(row.latest_message_id),
     memberCount: Number(row.member_count),
     agentCount: Number(row.agent_count),
+  }));
+}
+
+const RUN_TRAY_WINDOW_MS = 10 * 60_000;
+
+/**
+ * Runs this user can act on — ones they triggered or that belong to an agent
+ * they own — across every channel. Active runs plus a short tail of finished
+ * ones: the tail is what lets the client announce a run that completed while
+ * the reader was somewhere else, without keeping a server-side outbox.
+ */
+async function listUserRuns(env: Env, user: AuthUser): Promise<UserRunSummary[]> {
+  const since = new Date(Date.now() - RUN_TRAY_WINDOW_MS).toISOString();
+  const rows = await env.DB.prepare(
+    `SELECT r.id,r.status,r.attempt,r.started_at,r.progress_text,r.relay_index,r.relay_total,
+      r.channel_id,r.thread_root_id,r.response_message_id,r.created_at,r.completed_at,r.last_error,
+      a.id AS agent_id,a.name AS agent_name,a.handle AS agent_handle,c.name AS channel_name
+     FROM agent_runs r
+     JOIN agents a ON a.id=r.agent_id
+     JOIN channels c ON c.id=r.channel_id
+     JOIN messages t ON t.id=r.trigger_message_id
+     WHERE (t.sender_user_id=? OR a.owner_user_id=?)
+       AND c.archived_at IS NULL
+       AND (c.is_private=0 OR EXISTS(
+         SELECT 1 FROM channel_members cm WHERE cm.channel_id=c.id AND cm.user_id=?))
+       AND (r.status IN ('queued','running','input-required') OR r.completed_at>=?)
+     ORDER BY r.created_at DESC
+     LIMIT 30`,
+  ).bind(user.id, user.id, user.id, since).all<{
+    id: string;
+    status: UserRunSummary["status"];
+    attempt: number;
+    started_at: string | null;
+    progress_text: string | null;
+    relay_index: number;
+    relay_total: number;
+    channel_id: string;
+    thread_root_id: number | null;
+    response_message_id: number;
+    created_at: string;
+    completed_at: string | null;
+    last_error: string | null;
+    agent_id: string;
+    agent_name: string;
+    agent_handle: string;
+    channel_name: string;
+  }>();
+  return rows.results.map((row) => ({
+    id: row.id,
+    status: row.status,
+    attempt: Number(row.attempt ?? 0),
+    startedAt: row.started_at,
+    progressText: row.progress_text,
+    relayIndex: Number(row.relay_index ?? 0),
+    relayTotal: Number(row.relay_total ?? 1),
+    channelId: row.channel_id,
+    channelName: row.channel_name,
+    agentId: row.agent_id,
+    agentName: row.agent_name,
+    agentHandle: row.agent_handle,
+    responseMessageId: row.response_message_id,
+    threadRootId: row.thread_root_id,
+    createdAt: row.created_at,
+    completedAt: row.completed_at,
+    lastError: row.last_error,
   }));
 }
 
@@ -566,8 +654,12 @@ async function createMessage(request: Request, env: Env, channelId: string): Pro
   const message = await getPublicMessage(env, messageId, user.id);
   if (message) await recordChannelEvent(env, channelId, "message.created", message);
 
+  // A relay is only meaningful with someone to hand off to, so a single agent
+  // stays an ordinary run rather than a one-leg relay.
+  const relay = body.agentMode === "relay" && validAgentIds.length > 1;
+  const relayGroupId = relay ? crypto.randomUUID() : null;
   const runs: Array<{ id: string; responseMessageId: number }> = [];
-  for (const agentId of validAgentIds) {
+  for (const [index, agentId] of validAgentIds.entries()) {
     const runId = crypto.randomUUID();
     const responseInsert = await env.DB.prepare(
       `INSERT INTO messages
@@ -577,14 +669,28 @@ async function createMessage(request: Request, env: Env, channelId: string): Pro
     const responseMessageId = Number(responseInsert.meta.last_row_id);
     await env.DB.prepare(
       `INSERT INTO agent_runs
-       (id,agent_id,channel_id,thread_root_id,trigger_message_id,response_message_id,status,created_at)
-       VALUES(?,?,?,?,?,?,'queued',?)`,
-    ).bind(runId, agentId, channelId, threadRootId, messageId, responseMessageId, now).run();
+       (id,agent_id,channel_id,thread_root_id,trigger_message_id,response_message_id,
+        status,relay_group_id,relay_index,relay_total,created_at)
+       VALUES(?,?,?,?,?,?,'queued',?,?,?,?)`,
+    ).bind(
+      runId,
+      agentId,
+      channelId,
+      threadRootId,
+      messageId,
+      responseMessageId,
+      relayGroupId,
+      relay ? index : 0,
+      relay ? validAgentIds.length : 1,
+      now,
+    ).run();
     const response = await getPublicMessage(env, responseMessageId, user.id);
     if (response) await recordChannelEvent(env, channelId, "message.created", response);
     runs.push({ id: runId, responseMessageId });
   }
-  for (const run of runs) {
+  // In a relay only the first leg starts here; each leg enqueues the next once
+  // it reaches a terminal state (`advanceRelay` in a2a.ts).
+  for (const run of relay ? runs.slice(0, 1) : runs) {
     try {
       await env.AGENT_TASKS.send({
         kind: "start",
@@ -592,17 +698,31 @@ async function createMessage(request: Request, env: Env, channelId: string): Pro
         queuedAt: new Date().toISOString(),
       } satisfies AgentQueueMessage);
     } catch {
-      await env.DB.batch([
-        env.DB.prepare(
-          "UPDATE agent_runs SET status='failed',last_error='Queue unavailable',completed_at=? WHERE id=?",
-        ).bind(new Date().toISOString(), run.id),
-        env.DB.prepare(
-          "UPDATE messages SET content='Agent queue is temporarily unavailable.',status='failed',updated_at=? WHERE id=?",
-        ).bind(new Date().toISOString(), run.responseMessageId),
-      ]);
+      // A relay head that never reached the queue leaves the rest of the chain
+      // waiting on a hand-off that will never come, so the whole group fails.
+      await failUnstartedRuns(env, relay ? runs : [run]);
     }
   }
-  return json({ message, runs }, 201);
+  return json({ message, runs, agentMode: relay ? "relay" : "parallel" }, 201);
+}
+
+async function failUnstartedRuns(
+  env: Env,
+  runs: Array<{ id: string; responseMessageId: number }>,
+): Promise<void> {
+  const now = new Date().toISOString();
+  await env.DB.batch(runs.flatMap((run) => [
+    env.DB.prepare(
+      "UPDATE agent_runs SET status='failed',last_error='Queue unavailable',completed_at=? WHERE id=?",
+    ).bind(now, run.id),
+    env.DB.prepare(
+      "UPDATE messages SET content='Agent queue is temporarily unavailable.',status='failed',updated_at=? WHERE id=?",
+    ).bind(now, run.responseMessageId),
+  ]));
+  for (const run of runs) {
+    const message = await getPublicMessage(env, run.responseMessageId, "");
+    if (message) await recordChannelEvent(env, message.channelId, "message.updated", message);
+  }
 }
 
 function dedupeMentions(
@@ -625,6 +745,11 @@ function dedupeMentions(
   return output.slice(0, 20);
 }
 
+/**
+ * Returns the mentioned agent ids **in the order the caller sent them**, which
+ * the client derives from their position in the message text. A relay runs in
+ * this order, so a Set-of-rows would silently reorder the hand-offs.
+ */
 async function validMentionedAgents(
   env: Env,
   channelId: string,
@@ -642,7 +767,7 @@ async function validMentionedAgents(
   if (valid.size !== new Set(agentIds).size) {
     throw new HttpError(400, "invalid_agent_mention", "One or more mentioned Agents are unavailable.");
   }
-  return [...valid];
+  return agentIds.filter((id) => valid.has(id));
 }
 
 async function toggleReaction(request: Request, env: Env, messageId: number): Promise<Response> {
@@ -1142,7 +1267,8 @@ async function actOnRun(
   await env.DB.batch([
     env.DB.prepare(
       `UPDATE agent_runs SET status='queued',remote_task_id=NULL,remote_context_id=NULL,
-       last_error=NULL,attempt=0,started_at=NULL,completed_at=NULL,created_at=? WHERE id=?`,
+       last_error=NULL,attempt=0,progress_text=NULL,started_at=NULL,completed_at=NULL,
+       created_at=? WHERE id=?`,
     ).bind(now, runId),
     env.DB.prepare(
       "UPDATE messages SET content='Thinking…',status='queued',updated_at=? WHERE id=?",

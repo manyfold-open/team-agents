@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  Activity,
   AtSign,
   Bot,
   Check,
@@ -38,6 +39,7 @@ import React, {
   useState,
 } from "react";
 import ReactMarkdown from "react-markdown";
+import { createMentionPlugin, formatElapsed, mentionPosition } from "./mentions";
 
 type Locale = "zh" | "en";
 type User = { id: string; username: string; role: "owner" | "member" };
@@ -51,10 +53,36 @@ type Channel = {
   role: "manager" | "member" | null;
   unread: boolean;
   unreadCount: number;
+  /** Unread messages that name you specifically — a stronger signal than unread. */
+  mentionCount: number;
+  activeRunCount: number;
   latestMessageId: number;
   memberCount: number;
   agentCount: number;
 };
+type RunStatus = "queued" | "running" | "input-required" | "completed" | "failed" | "canceled";
+type Run = {
+  id: string;
+  status: RunStatus;
+  attempt: number;
+  startedAt: string | null;
+  progressText: string | null;
+  relayIndex: number;
+  relayTotal: number;
+};
+type RunSummary = Run & {
+  channelId: string;
+  channelName: string;
+  agentId: string;
+  agentName: string;
+  agentHandle: string;
+  responseMessageId: number;
+  threadRootId: number | null;
+  createdAt: string;
+  completedAt: string | null;
+  lastError: string | null;
+};
+type AgentMode = "parallel" | "relay";
 type Agent = {
   id: string;
   ownerUserId: string;
@@ -105,6 +133,7 @@ type Message = {
   runId: string | null;
   runTriggeredByUserId: string | null;
   agentOwnerUserId: string | null;
+  run: Run | null;
   createdAt: string;
   updatedAt: string;
   reactions: Array<{ emoji: string; count: number; reacted: boolean }>;
@@ -116,6 +145,14 @@ type Bootstrap = {
   workspace?: { id: string; name: string };
   channels?: Channel[];
   agents?: Agent[];
+  runs?: RunSummary[];
+};
+type Toast = {
+  id: number;
+  tone: "done" | "failed" | "attention";
+  title: string;
+  body: string;
+  channelId?: string;
 };
 type Modal = "channel" | "people" | "agents" | "account" | null;
 /** Composer seed; `nonce` makes repeat inserts of the same handle distinct. */
@@ -206,7 +243,6 @@ const copy = {
     currentPassword: "当前密码",
     newPassword: "新密码",
     updatePassword: "更新密码",
-    thinking: "Agent 正在处理",
     inputRequired: "Agent 需要更多信息",
     failed: "Agent 调用失败",
     canceled: "已停止",
@@ -234,6 +270,39 @@ const copy = {
     continueRun: "继续这个任务",
     inputRequiredHint: "再 @ 它一次，就会接着同一个任务继续。",
     unknownMention: (handle: string) => `@${handle} 不在这个频道，不会触发任何 Agent。`,
+    runQueued: "排队中",
+    runRunning: "运行中",
+    runWaitingTurn: "等待上一棒交接",
+    runRelay: (index: number, total: number) => `接力 ${index}/${total}`,
+    runAttempt: (attempt: number) => `第 ${attempt} 次重试`,
+    runs: "我的任务",
+    runsEmpty: "现在没有属于你的运行中任务。",
+    runsRecent: "刚刚结束",
+    runsActive: "进行中",
+    openChannel: "前往",
+    runCompleted: "已完成",
+    runFailed: "失败",
+    runCanceled: "已停止",
+    runInputRequired: "等待补充信息",
+    toastDone: (agent: string) => `@${agent} 已经答完了`,
+    toastFailed: (agent: string) => `@${agent} 没能完成`,
+    toastInput: (agent: string) => `@${agent} 需要你补充信息`,
+    inChannel: (channel: string) => `在 #${channel}`,
+    desktopNotifications: "桌面通知",
+    desktopNotificationsHint: "Agent 跑完时，即使切到别的标签页也提醒你。",
+    desktopBlocked: "浏览器拒绝了通知权限，请在站点设置里打开。",
+    otherAgents: "你的其他 Agent",
+    otherAgentsHint: "选中会先把它加入本频道",
+    addingAgent: "正在加入频道…",
+    agentJoined: (name: string) => `${name} 已加入本频道`,
+    modeLabel: "多个 Agent 怎么跑",
+    modeParallel: "并行",
+    modeRelay: "接力",
+    modeParallelHint: "各自独立回答，互相看不到对方。",
+    modeRelayHint: "按 @ 的先后依次执行，后一个能看到前面的答案。",
+    emptyConnect: "连接第一个 Agent",
+    emptyAdd: "把 Agent 加进这个频道",
+    mentionsTitle: (n: number) => `${n} 条提到你`,
   },
   en: {
     welcome: "Welcome back to the work",
@@ -319,7 +388,6 @@ const copy = {
     currentPassword: "Current password",
     newPassword: "New password",
     updatePassword: "Update password",
-    thinking: "Agent is working",
     inputRequired: "Agent needs more information",
     failed: "Agent call failed",
     canceled: "Stopped",
@@ -347,6 +415,39 @@ const copy = {
     continueRun: "Continue this task",
     inputRequiredHint: "Mention it again and it picks up the same task.",
     unknownMention: (handle: string) => `@${handle} is not in this channel — no agent will run.`,
+    runQueued: "Queued",
+    runRunning: "Working",
+    runWaitingTurn: "Waiting for the hand-off",
+    runRelay: (index: number, total: number) => `Relay ${index}/${total}`,
+    runAttempt: (attempt: number) => `retry ${attempt}`,
+    runs: "My runs",
+    runsEmpty: "Nothing of yours is running right now.",
+    runsRecent: "Just finished",
+    runsActive: "In progress",
+    openChannel: "Open",
+    runCompleted: "Done",
+    runFailed: "Failed",
+    runCanceled: "Stopped",
+    runInputRequired: "Needs input",
+    toastDone: (agent: string) => `@${agent} finished`,
+    toastFailed: (agent: string) => `@${agent} could not finish`,
+    toastInput: (agent: string) => `@${agent} needs more from you`,
+    inChannel: (channel: string) => `in #${channel}`,
+    desktopNotifications: "Desktop notifications",
+    desktopNotificationsHint: "Tells you when an agent finishes, even from another tab.",
+    desktopBlocked: "The browser denied notifications — enable them in site settings.",
+    otherAgents: "Your other agents",
+    otherAgentsHint: "Picking one adds it to this channel first",
+    addingAgent: "Adding to the channel…",
+    agentJoined: (name: string) => `${name} joined this channel`,
+    modeLabel: "How several agents run",
+    modeParallel: "Parallel",
+    modeRelay: "Relay",
+    modeParallelHint: "Independent answers; none of them sees the others.",
+    modeRelayHint: "One at a time in mention order, each given the answers before it.",
+    emptyConnect: "Connect your first agent",
+    emptyAdd: "Bring an agent into this channel",
+    mentionsTitle: (n: number) => `${n} mentioning you`,
   },
 } as const;
 
@@ -382,6 +483,12 @@ function upsertMessage(list: Message[], message: Message): Message[] {
 }
 
 const BOTTOM_THRESHOLD = 80;
+const TERMINAL_RUN_STATUSES = new Set<RunStatus>([
+  "completed",
+  "failed",
+  "canceled",
+  "input-required",
+]);
 
 function dayKey(iso: string): string {
   return new Date(iso).toDateString();
@@ -412,6 +519,51 @@ function pinToBottom(node: HTMLElement): void {
     node.scrollTop = node.scrollHeight;
   });
 }
+
+/**
+ * Live wall-clock for a run in flight. An agent turn can legitimately last
+ * minutes, and a spinner with no number behind it is indistinguishable from a
+ * stuck one.
+ */
+function useElapsed(since: string | null, active: boolean): string | null {
+  // Read the clock in the interval callback, never during render. A card that
+  // was mounted while idle and only later starts running can therefore be up to
+  // one tick behind; `formatElapsed` floors at zero, so that reads as `0:00`
+  // for a moment rather than as a negative number.
+  const [now, setNow] = useState(0);
+  useEffect(() => {
+    if (!active || !since) return;
+    // Deferred rather than called inline, so the first reading does not land as
+    // a cascading render inside the effect itself.
+    queueMicrotask(() => setNow(Date.now()));
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [active, since]);
+  if (!since || !now) return null;
+  const started = Date.parse(since);
+  if (!Number.isFinite(started)) return null;
+  return formatElapsed(now - started);
+}
+
+const NOTIFY_KEY = "team-agents-desktop-notifications";
+
+function desktopNotificationsOn(): boolean {
+  return typeof window !== "undefined"
+    && window.localStorage.getItem(NOTIFY_KEY) === "on"
+    && typeof Notification !== "undefined"
+    && Notification.permission === "granted";
+}
+
+/** Only fires for a tab the reader is not looking at — otherwise the toast is it. */
+function notifyDesktop(title: string, body: string): void {
+  if (!desktopNotificationsOn() || document.visibilityState === "visible") return;
+  try {
+    new Notification(title, { body, icon: "/favicon.svg", tag: "team-agents-run" });
+  } catch {
+    // Some browsers only allow notifications through a service worker.
+  }
+}
+
 
 export function TeamAgentsApp() {
   const [locale, setLocale] = useState<Locale>("zh");
@@ -444,6 +596,23 @@ export function TeamAgentsApp() {
   const [olderPending, setOlderPending] = useState(false);
   const [prefill, setPrefill] = useState<Prefill | null>(null);
   const [threadPrefill, setThreadPrefill] = useState<Prefill | null>(null);
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const [runsOpen, setRunsOpen] = useState(false);
+  const toastSeq = useRef(0);
+  // Terminal runs already announced. Bootstrap keeps reporting a finished run
+  // for ten minutes so a reader who was away still hears about it — without
+  // this that tail would re-announce the same run on every poll.
+  const announcedRuns = useRef(new Set<string>());
+  const runsPrimed = useRef(false);
+
+  const pushToast = useCallback((toast: Omit<Toast, "id">) => {
+    toastSeq.current += 1;
+    const id = toastSeq.current;
+    setToasts((current) => [...current.slice(-2), { ...toast, id }]);
+    window.setTimeout(() => {
+      setToasts((current) => current.filter((entry) => entry.id !== id));
+    }, 8_000);
+  }, []);
 
   const refreshBootstrap = useCallback(async () => {
     const data = await api<Bootstrap>("/api/bootstrap");
@@ -611,8 +780,17 @@ export function TeamAgentsApp() {
     let socket: WebSocket | null = null;
     let reconnectTimer = 0;
     let readTimer = 0;
+    let runSyncTimer = 0;
     let closed = false;
     let attempt = 0;
+    // Coalesced: a relay hand-off fires several run events in a row and they all
+    // want the same single refresh.
+    const scheduleRunSync = () => {
+      window.clearTimeout(runSyncTimer);
+      runSyncTimer = window.setTimeout(() => {
+        refreshBootstrap().catch(() => undefined);
+      }, 400);
+    };
     // Only count as read what the reader could actually have seen: the tab is
     // in front and they are sitting at the bottom of the transcript.
     const noteRead = (messageId: number) => {
@@ -660,6 +838,10 @@ export function TeamAgentsApp() {
             loadChannel(selectedChannelId);
             refreshBootstrap();
           }
+          // Who may act on a run lives on the run record, not in this event, so
+          // the tray and the toast are both driven from the next bootstrap
+          // instead of being reconstructed here.
+          if (payload.kind === "agent.run.updated") scheduleRunSync();
         } catch {
           // Ignore non-JSON keepalive frames.
         }
@@ -679,26 +861,76 @@ export function TeamAgentsApp() {
       window.clearInterval(ping);
       window.clearTimeout(reconnectTimer);
       window.clearTimeout(readTimer);
+      window.clearTimeout(runSyncTimer);
       socket?.close();
     };
   }, [selectedChannelId, requiresJoin, boot?.authenticated, loadChannel, refreshBootstrap, markRead]);
 
+  const runs = boot?.runs;
+  const activeRuns = useMemo(
+    () => (runs ?? []).filter((run) => run.status === "queued" || run.status === "running"),
+    [runs],
+  );
+  const selfHandle = boot?.user?.username.toLowerCase() ?? "";
+  const mentionPlugin = useMemo(() => createMentionPlugin(
+    new Set([
+      ...rosterAgents.map((agent) => agent.handle.toLowerCase()),
+      ...rosterUsers.map((member) => member.username.toLowerCase()),
+    ]),
+    selfHandle,
+  ), [rosterAgents, rosterUsers, selfHandle]);
+
   // The channel socket only carries the open channel, so activity anywhere else
   // is invisible without this. Polling keeps the sidebar and the tab title
-  // honest while the reader waits on a long agent run somewhere else.
+  // honest while the reader waits on a long agent run somewhere else, and
+  // tightens up while one of their own runs is actually in flight.
   useEffect(() => {
     if (!boot?.authenticated) return;
     const sync = () => {
       if (document.visibilityState !== "visible") return;
       refreshBootstrap().catch(() => undefined);
     };
-    const timer = window.setInterval(sync, 20_000);
+    const timer = window.setInterval(sync, activeRuns.length ? 5_000 : 20_000);
     document.addEventListener("visibilitychange", sync);
     return () => {
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", sync);
     };
-  }, [boot?.authenticated, refreshBootstrap]);
+  }, [boot?.authenticated, refreshBootstrap, activeRuns.length]);
+
+  // Announces a run the reader could not have watched finish. Terminal states
+  // only, and never twice for the same run.
+  useEffect(() => {
+    if (!runs) return;
+    const seen = announcedRuns.current;
+    const finished = runs.filter((run) => TERMINAL_RUN_STATUSES.has(run.status));
+    if (!runsPrimed.current) {
+      // First load: everything already finished is history, not news.
+      runsPrimed.current = true;
+      for (const run of finished) seen.add(`${run.id}:${run.status}`);
+      return;
+    }
+    for (const run of finished) {
+      const key = `${run.id}:${run.status}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      // A stop the reader asked for does not need to be reported back to them.
+      if (run.status === "canceled") continue;
+      const title = run.status === "completed"
+        ? t.toastDone(run.agentHandle)
+        : run.status === "failed"
+          ? t.toastFailed(run.agentHandle)
+          : t.toastInput(run.agentHandle);
+      const body = t.inChannel(run.channelName);
+      pushToast({
+        tone: run.status === "completed" ? "done" : run.status === "failed" ? "failed" : "attention",
+        title,
+        body,
+        channelId: run.channelId,
+      });
+      notifyDesktop(title, body);
+    }
+  }, [runs, t, pushToast]);
 
   const unreadElsewhere = (boot?.channels ?? []).reduce(
     (sum, channel) => sum + (channel.id === selectedChannelId ? 0 : channel.unreadCount),
@@ -708,6 +940,37 @@ export function TeamAgentsApp() {
   useEffect(() => {
     document.title = unreadElsewhere > 0 ? `(${unreadElsewhere}) Team Agents` : "Team Agents";
   }, [unreadElsewhere]);
+
+  // Agents this reader owns that are not in the open channel yet. Offering them
+  // in the mention menu is what removes the modal detour: pick one and it joins.
+  const ownAgentsOutsideChannel = useMemo(() => {
+    const inChannel = new Set(rosterAgents.map((agent) => agent.id));
+    return (boot?.agents ?? []).filter((agent) =>
+      agent.enabled && agent.ownerUserId === boot?.user?.id && !inChannel.has(agent.id));
+  }, [boot?.agents, boot?.user?.id, rosterAgents]);
+
+  const onAgentAdded = useCallback(async (agent: Agent) => {
+    if (!selectedChannelId) return;
+    await api(
+      `/api/channels/${encodeURIComponent(selectedChannelId)}/agents/${encodeURIComponent(agent.id)}`,
+      { method: "POST" },
+    );
+    // Optimistic: the roster reload behind `member.updated` lands a moment
+    // later, and until it does the handle must already resolve.
+    setRosterAgents((current) => current.some((candidate) => candidate.id === agent.id)
+      ? current
+      : [...current, {
+        id: agent.id,
+        name: agent.name,
+        handle: agent.handle,
+        description: agent.description,
+        ownerUserId: agent.ownerUserId,
+        ownerUsername: agent.ownerUsername ?? "",
+        joinedAt: new Date().toISOString(),
+        kind: "agent",
+      }]);
+    await refreshBootstrap();
+  }, [selectedChannelId, refreshBootstrap]);
 
   const mentionInComposer = useCallback((handle: string, inThread: boolean) => {
     const seed = (current: Prefill | null): Prefill => ({
@@ -772,8 +1035,29 @@ export function TeamAgentsApp() {
           <button className="nav-row" onClick={() => setModal("agents")}>
             <Bot size={17} />
             <span>{t.agents}</span>
-            <span className="nav-count">{rosterAgents.length}</span>
+            <span className="nav-count">{(boot.agents ?? []).length}</span>
           </button>
+          <button
+            className={`nav-row ${activeRuns.length ? "is-live" : ""}`}
+            onClick={() => setRunsOpen((current) => !current)}
+            aria-expanded={runsOpen}
+          >
+            {activeRuns.length ? <RefreshCw className="spin" size={17} /> : <Activity size={17} />}
+            <span>{t.runs}</span>
+            {activeRuns.length > 0 && <span className="nav-count live">{activeRuns.length}</span>}
+          </button>
+          {runsOpen && (
+            <RunTray
+              locale={locale}
+              runs={runs ?? []}
+              onOpenChannel={(channelId) => {
+                setSelectedChannelId(channelId);
+                setRunsOpen(false);
+                setSidebarOpen(false);
+              }}
+              onAction={(run, action) => runAction(run.id, action, setError)}
+            />
+          )}
         </nav>
 
         <div className="channel-section">
@@ -795,6 +1079,7 @@ export function TeamAgentsApp() {
             {filteredChannels.map((channel) => {
               const active = channel.id === selectedChannelId;
               const unread = active ? 0 : channel.unreadCount;
+              const mentions = active ? 0 : channel.mentionCount;
               return (
                 <button
                   key={channel.id}
@@ -806,7 +1091,15 @@ export function TeamAgentsApp() {
                 >
                   {channel.isPrivate ? <LockKeyhole size={14} /> : <Hash size={15} />}
                   <span>{channel.name}</span>
-                  {unread > 0 && (
+                  {channel.activeRunCount > 0 && (
+                    <i className="channel-busy" aria-hidden="true"><RefreshCw className="spin" size={11} /></i>
+                  )}
+                  {mentions > 0 && (
+                    <i className="mention-count" title={t.mentionsTitle(mentions)}>
+                      @{mentions > 9 ? "9+" : mentions}
+                    </i>
+                  )}
+                  {unread > 0 && !mentions && (
                     <i className="unread-count">{unread > 99 ? "99+" : unread}</i>
                   )}
                 </button>
@@ -911,9 +1204,10 @@ export function TeamAgentsApp() {
                               message={message}
                               currentUser={boot.user!}
                               locale={locale}
+                              mentionPlugin={mentionPlugin}
                               onThread={() => openThread(message)}
                               onReact={(emoji) => reactToMessage(message.id, emoji, selectedChannel.id, setMessages, setError)}
-                              onRunAction={(action) => runAction(message, action, setError)}
+                              onRunAction={(action) => runAction(message.runId, action, setError)}
                               onMention={(handle) => mentionInComposer(handle, false)}
                             />
                           </React.Fragment>
@@ -923,6 +1217,17 @@ export function TeamAgentsApp() {
                       <div className="empty-messages">
                         <MessageCircle size={30} />
                         <p>{t.noMessages}</p>
+                        {/* "@ an agent" is not actionable in a channel with no
+                            agents in it, so the way to get one is right here. */}
+                        {rosterAgents.length === 0 && (
+                          <button className="primary-button" onClick={() => setModal("agents")}>
+                            <Bot size={16} />
+                            {(boot.agents ?? []).some((candidate) =>
+                              candidate.ownerUserId === boot.user!.id && candidate.enabled)
+                              ? t.emptyAdd
+                              : t.emptyConnect}
+                          </button>
+                        )}
                       </div>
                     )}
                   </div>
@@ -938,6 +1243,8 @@ export function TeamAgentsApp() {
                   locale={locale}
                   rosterUsers={rosterUsers}
                   rosterAgents={rosterAgents}
+                  ownAgents={ownAgentsOutsideChannel}
+                  onAgentAdded={onAgentAdded}
                   prefill={prefill}
                   onSent={(message) => {
                     // Sending is an explicit intent to be at the bottom.
@@ -974,10 +1281,11 @@ export function TeamAgentsApp() {
               message={threadRoot}
               currentUser={boot.user}
               locale={locale}
+              mentionPlugin={mentionPlugin}
               isThreadRoot
               onThread={() => undefined}
               onReact={(emoji) => reactToMessage(threadRoot.id, emoji, selectedChannel.id, setMessages, setError)}
-              onRunAction={(action) => runAction(threadRoot, action, setError)}
+              onRunAction={(action) => runAction(threadRoot.runId, action, setError)}
               onMention={(handle) => mentionInComposer(handle, true)}
             />
             <div className="thread-divider">
@@ -989,10 +1297,11 @@ export function TeamAgentsApp() {
                 message={message}
                 currentUser={boot.user!}
                 locale={locale}
+                mentionPlugin={mentionPlugin}
                 compact
                 onThread={() => undefined}
                 onReact={(emoji) => reactToMessage(message.id, emoji, selectedChannel.id, setThreadMessages, setError)}
-                onRunAction={(action) => runAction(message, action, setError)}
+                onRunAction={(action) => runAction(message.runId, action, setError)}
                 onMention={(handle) => mentionInComposer(handle, true)}
               />
             ))}
@@ -1002,6 +1311,8 @@ export function TeamAgentsApp() {
             locale={locale}
             rosterUsers={rosterUsers}
             rosterAgents={rosterAgents}
+            ownAgents={ownAgentsOutsideChannel}
+            onAgentAdded={onAgentAdded}
             threadRootId={threadRoot.id}
             prefill={threadPrefill}
             onSent={(message) => setThreadMessages((current) => upsertMessage(current, message))}
@@ -1045,6 +1356,12 @@ export function TeamAgentsApp() {
           }}
         />
       )}
+      <ToastStack
+        toasts={toasts}
+        onOpen={(channelId) => setSelectedChannelId(channelId)}
+        onDismiss={(id) => setToasts((current) => current.filter((entry) => entry.id !== id))}
+      />
+
       {modal === "account" && (
         <AccountModal
           locale={locale}
@@ -1052,6 +1369,11 @@ export function TeamAgentsApp() {
           onClose={() => setModal(null)}
           onLogout={async () => {
             await api("/api/auth/logout", { method: "POST" });
+            // The next account starts with a clean slate, otherwise their runs
+            // would arrive already marked as announced — or worse, announced.
+            announcedRuns.current.clear();
+            runsPrimed.current = false;
+            setToasts([]);
             setBoot({ authenticated: false });
             setModal(null);
           }}
@@ -1191,6 +1513,116 @@ function Avatar({ name, agent = false }: { name: string; agent?: boolean }) {
   );
 }
 
+function RunStatusChip({ run, locale }: { run: RunSummary; locale: Locale }) {
+  const t = copy[locale];
+  const active = run.status === "queued" || run.status === "running";
+  const elapsed = useElapsed(run.startedAt ?? run.createdAt, active);
+  const label = run.status === "queued"
+    ? t.runQueued
+    : run.status === "running"
+      ? t.runRunning
+      : run.status === "completed"
+        ? t.runCompleted
+        : run.status === "failed"
+          ? t.runFailed
+          : run.status === "canceled"
+            ? t.runCanceled
+            : t.runInputRequired;
+  return (
+    <span className={`run-status run-${run.status}`}>
+      {active && <RefreshCw className="spin" size={11} />}
+      {label}
+      {active && elapsed && <em>{elapsed}</em>}
+    </span>
+  );
+}
+
+/**
+ * Every run this reader can act on, across channels. The channel socket only
+ * carries the open channel, so without this a run started somewhere else is
+ * invisible until they happen to walk back into it.
+ */
+function RunTray(props: {
+  locale: Locale;
+  runs: RunSummary[];
+  onOpenChannel: (channelId: string) => void;
+  onAction: (run: RunSummary, action: "cancel" | "retry") => void;
+}) {
+  const { locale, runs, onOpenChannel, onAction } = props;
+  const t = copy[locale];
+  const active = runs.filter((run) => run.status === "queued" || run.status === "running");
+  const rest = runs.filter((run) => !active.includes(run));
+  const section = (title: string, list: RunSummary[]) => list.length > 0 && (
+    <>
+      <div className="run-tray-heading">{title}</div>
+      {list.map((run) => (
+        <div className="run-tray-row" key={run.id}>
+          <Avatar name={run.agentName} agent />
+          <div className="run-tray-main">
+            <strong>@{run.agentHandle}</strong>
+            <small>{t.inChannel(run.channelName)}</small>
+            <RunStatusChip run={run} locale={locale} />
+            {run.relayTotal > 1 && (
+              <em className="run-chip">{t.runRelay(run.relayIndex + 1, run.relayTotal)}</em>
+            )}
+            {run.progressText && <p>{run.progressText}</p>}
+          </div>
+          <div className="run-tray-actions">
+            <button onClick={() => onOpenChannel(run.channelId)}>{t.openChannel}</button>
+            {(run.status === "queued" || run.status === "running") && (
+              <button className="danger-text" onClick={() => onAction(run, "cancel")}>{t.stop}</button>
+            )}
+            {(run.status === "failed" || run.status === "canceled") && (
+              <button onClick={() => onAction(run, "retry")}>{t.retry}</button>
+            )}
+          </div>
+        </div>
+      ))}
+    </>
+  );
+  return (
+    <div className="run-tray">
+      {runs.length === 0 && <p className="run-tray-empty">{t.runsEmpty}</p>}
+      {section(t.runsActive, active)}
+      {section(t.runsRecent, rest)}
+    </div>
+  );
+}
+
+function ToastStack({ toasts, onOpen, onDismiss }: {
+  toasts: Toast[];
+  onOpen: (channelId: string) => void;
+  onDismiss: (id: number) => void;
+}) {
+  if (!toasts.length) return null;
+  return (
+    <div className="toast-stack" role="status" aria-live="polite">
+      {toasts.map((toast) => (
+        <div className={`toast toast-${toast.tone}`} key={toast.id}>
+          <span className="toast-icon">
+            {toast.tone === "done" ? <Check size={15} />
+              : toast.tone === "failed" ? <X size={15} />
+                : <MessageCircle size={15} />}
+          </span>
+          <button
+            className="toast-body"
+            onClick={() => {
+              if (toast.channelId) onOpen(toast.channelId);
+              onDismiss(toast.id);
+            }}
+          >
+            <strong>{toast.title}</strong>
+            <small>{toast.body}</small>
+          </button>
+          <button className="toast-close" onClick={() => onDismiss(toast.id)} aria-label="Close">
+            <X size={14} />
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function ChannelIntro({ channel, locale }: { channel: Channel; locale: Locale }) {
   return (
     <div className="channel-intro">
@@ -1206,6 +1638,7 @@ function MessageCard(props: {
   message: Message;
   currentUser: User;
   locale: Locale;
+  mentionPlugin: ReturnType<typeof createMentionPlugin>;
   onThread: () => void;
   onReact: (emoji: string) => void;
   onRunAction: (action: "cancel" | "retry") => void;
@@ -1213,12 +1646,29 @@ function MessageCard(props: {
   compact?: boolean;
   isThreadRoot?: boolean;
 }) {
-  const { message, currentUser, locale, onThread, onReact, onRunAction, onMention, compact, isThreadRoot } = props;
+  const {
+    message,
+    currentUser,
+    locale,
+    mentionPlugin,
+    onThread,
+    onReact,
+    onRunAction,
+    onMention,
+    compact,
+    isThreadRoot,
+  } = props;
   const t = copy[locale];
   const [copied, setCopied] = useState(false);
   const agent = message.sender.type === "agent";
   const system = message.sender.type === "system";
   const running = ["queued", "streaming"].includes(message.status);
+  const run = message.run;
+  // A queued leg has not started, so its clock runs from when it was posted.
+  const elapsed = useElapsed(run?.startedAt ?? message.createdAt, running);
+  // While a run is still queued the body is only the server's placeholder — the
+  // status line says it better, and in a relay it would be actively misleading.
+  const showBody = !(running && message.status === "queued" && Boolean(run));
   const copyContent = async () => {
     try {
       await navigator.clipboard.writeText(message.content);
@@ -1252,10 +1702,12 @@ function MessageCard(props: {
             minute: "2-digit",
           }).format(new Date(message.createdAt))}</time>
         </header>
-        <div className="message-content">
-          <ReactMarkdown skipHtml>{message.content}</ReactMarkdown>
-          {running && <span className="typing-cursor" />}
-        </div>
+        {showBody && (
+          <div className="message-content">
+            <ReactMarkdown skipHtml rehypePlugins={[mentionPlugin]}>{message.content}</ReactMarkdown>
+            {running && <span className="typing-cursor" />}
+          </div>
+        )}
         {message.status !== "sent" && (
           <div className={`message-status status-${message.status}`}>
             {running && <RefreshCw className="spin" size={13} />}
@@ -1263,14 +1715,33 @@ function MessageCard(props: {
             {message.status === "failed" && <X size={13} />}
             {message.status === "canceled" && <Square size={12} />}
             <span>
-              {running ? t.thinking : message.status === "input-required" ? t.inputRequired : message.status === "failed" ? t.failed : t.canceled}
+              {running
+                ? message.status === "queued" ? t.runQueued : t.runRunning
+                : message.status === "input-required"
+                  ? t.inputRequired
+                  : message.status === "failed" ? t.failed : t.canceled}
             </span>
+            {running && elapsed && <em className="run-clock">{elapsed}</em>}
+            {run && run.relayTotal > 1 && (
+              <em className="run-chip">{t.runRelay(run.relayIndex + 1, run.relayTotal)}</em>
+            )}
+            {running && message.status === "queued" && run && run.relayIndex > 0 && (
+              <em className="run-chip">{t.runWaitingTurn}</em>
+            )}
+            {running && run && run.attempt > 0 && (
+              <em className="run-chip">{t.runAttempt(run.attempt)}</em>
+            )}
             {canManageRun && running && <button onClick={() => onRunAction("cancel")}>{t.stop}</button>}
             {canManageRun && ["failed", "canceled"].includes(message.status) && <button onClick={() => onRunAction("retry")}>{t.retry}</button>}
             {message.status === "input-required" && message.sender.handle && (
               <button onClick={() => onMention(message.sender.handle!)}>{t.continueRun}</button>
             )}
           </div>
+        )}
+        {/* The agent's own narration of what it is doing — the only progress a
+            long run ever reports, and previously discarded on first artifact. */}
+        {running && run?.progressText && (
+          <p className="run-progress">{run.progressText}</p>
         )}
         {message.status === "input-required" && (
           <p className="status-hint">{t.inputRequiredHint}</p>
@@ -1312,15 +1783,31 @@ function Composer(props: {
   locale: Locale;
   rosterUsers: RosterUser[];
   rosterAgents: RosterAgent[];
+  /** Owned agents not in this channel; picking one adds it, then mentions it. */
+  ownAgents: Agent[];
+  onAgentAdded: (agent: Agent) => Promise<void>;
   threadRootId?: number;
   prefill?: Prefill | null;
   onSent: (message: Message) => void;
 }) {
-  const { channel, locale, rosterUsers, rosterAgents, threadRootId, prefill, onSent } = props;
+  const {
+    channel,
+    locale,
+    rosterUsers,
+    rosterAgents,
+    ownAgents,
+    onAgentAdded,
+    threadRootId,
+    prefill,
+    onSent,
+  } = props;
   const t = copy[locale];
   const [value, setValue] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
+  const [addingAgent, setAddingAgent] = useState<string | null>(null);
+  const [agentMode, setAgentMode] = useState<AgentMode>("parallel");
+  const [notice, setNotice] = useState("");
   // Keyed by the query it belongs to, so a changed query resets the highlight
   // without an effect round-trip.
   const [mentionCursor, setMentionCursor] = useState<{ query: string | null; index: number }>({
@@ -1334,15 +1821,25 @@ function Composer(props: {
   const mentionQuery = mentionMatch?.[1]?.toLowerCase() ?? null;
   const mentionOptions = useMemo(() => {
     if (mentionQuery === null) return [];
-    return [
+    const inChannel = [
       ...rosterAgents
         .filter((agent) => agent.handle.includes(mentionQuery))
-        .map((agent) => ({ id: agent.id, label: agent.name, handle: agent.handle, kind: "agent" as const })),
+        .map((agent) => ({ id: agent.id, label: agent.name, handle: agent.handle, kind: "agent" as const, agent: null })),
       ...rosterUsers
         .filter((user) => user.username.toLowerCase().includes(mentionQuery))
-        .map((user) => ({ id: user.id, label: user.username, handle: user.username, kind: "user" as const })),
-    ].slice(0, 7);
-  }, [mentionQuery, rosterAgents, rosterUsers]);
+        .map((user) => ({ id: user.id, label: user.username, handle: user.username, kind: "user" as const, agent: null })),
+    ].slice(0, 6);
+    // Listed last and marked: choosing one is not just a mention, it puts the
+    // agent in the channel. Sliced separately so a busy roster cannot squeeze
+    // the group out of the menu entirely.
+    return [
+      ...inChannel,
+      ...ownAgents
+        .filter((agent) => agent.handle.includes(mentionQuery))
+        .map((agent) => ({ id: agent.id, label: agent.name, handle: agent.handle, kind: "add-agent" as const, agent }))
+        .slice(0, 3),
+    ];
+  }, [mentionQuery, rosterAgents, rosterUsers, ownAgents]);
   const menuOpen = mentionOptions.length > 0 && !mentionDismissed;
   const mentionIndex = mentionCursor.query === mentionQuery ? mentionCursor.index : 0;
   const moveMention = (step: number) => {
@@ -1363,10 +1860,28 @@ function Composer(props: {
   useEffect(() => {
     if (appliedPrefill) textarea.current?.focus();
   }, [appliedPrefill]);
-  const chooseMention = (option: typeof mentionOptions[number]) => {
+  const chooseMention = async (option: typeof mentionOptions[number]) => {
+    // The handle goes in first either way: the reader keeps typing while the
+    // join request is still in flight.
     setValue((current) => current.replace(/@[\w-]*$/, `@${option.handle} `));
     window.setTimeout(() => textarea.current?.focus(), 0);
+    if (option.kind !== "add-agent" || !option.agent) return;
+    setAddingAgent(option.id);
+    setError("");
+    try {
+      await onAgentAdded(option.agent);
+      setNotice(t.agentJoined(option.label));
+      window.setTimeout(() => setNotice(""), 4_000);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setAddingAgent(null);
+    }
   };
+  const mentionedAgentCount = useMemo(() => {
+    const lower = value.toLowerCase();
+    return rosterAgents.filter((agent) => mentionPosition(lower, agent.handle) >= 0).length;
+  }, [value, rosterAgents]);
   // A handle nobody in this channel answers to would post as plain text and
   // silently start no run at all, so it gets called out before send.
   const unresolvedMention = useMemo(() => {
@@ -1386,12 +1901,17 @@ function Composer(props: {
     setSending(true);
     setError("");
     const lower = value.toLowerCase();
+    // Ordered by where each handle appears: a relay hands off in the order the
+    // sender wrote them, so the server must receive that order, not roster order.
+    const agentMentions = rosterAgents
+      .map((agent) => ({ agent, at: mentionPosition(lower, agent.handle) }))
+      .filter((entry) => entry.at >= 0)
+      .sort((left, right) => left.at - right.at)
+      .map((entry) => ({ kind: "agent" as const, id: entry.agent.id }));
     const mentions = [
-      ...rosterAgents
-        .filter((agent) => new RegExp(`(^|\\s)@${escapeRegExp(agent.handle)}\\b`, "i").test(lower))
-        .map((agent) => ({ kind: "agent" as const, id: agent.id })),
+      ...agentMentions,
       ...rosterUsers
-        .filter((user) => new RegExp(`(^|\\s)@${escapeRegExp(user.username)}\\b`, "i").test(lower))
+        .filter((user) => mentionPosition(lower, user.username) >= 0)
         .map((user) => ({ kind: "user" as const, id: user.id })),
     ];
     try {
@@ -1404,6 +1924,7 @@ function Composer(props: {
             content: value.trim(),
             ...(threadRootId ? { threadRootId } : {}),
             mentions,
+            ...(agentMentions.length > 1 ? { agentMode } : {}),
           }),
         },
       );
@@ -1420,16 +1941,27 @@ function Composer(props: {
       {menuOpen && (
         <div className="mention-menu">
           {mentionOptions.map((option, index) => (
-            <button
-              key={`${option.kind}:${option.id}`}
-              className={index === mentionIndex ? "active" : ""}
-              onMouseEnter={() => setMentionCursor({ query: mentionQuery, index })}
-              onClick={() => chooseMention(option)}
-            >
-              <Avatar name={option.label} agent={option.kind === "agent"} />
-              <span><strong>{option.label}</strong><small>@{option.handle}</small></span>
-              {option.kind === "agent" && <span className="agent-badge">AGENT</span>}
-            </button>
+            <React.Fragment key={`${option.kind}:${option.id}`}>
+              {option.kind === "add-agent" && mentionOptions[index - 1]?.kind !== "add-agent" && (
+                <div className="mention-group">
+                  <strong>{t.otherAgents}</strong><small>{t.otherAgentsHint}</small>
+                </div>
+              )}
+              <button
+                className={index === mentionIndex ? "active" : ""}
+                onMouseEnter={() => setMentionCursor({ query: mentionQuery, index })}
+                onClick={() => void chooseMention(option)}
+              >
+                <Avatar name={option.label} agent={option.kind !== "user"} />
+                <span><strong>{option.label}</strong><small>@{option.handle}</small></span>
+                {option.kind === "agent" && <span className="agent-badge">AGENT</span>}
+                {option.kind === "add-agent" && (
+                  <span className="agent-badge add">
+                    {addingAgent === option.id ? <RefreshCw className="spin" size={11} /> : <Plus size={11} />}
+                  </span>
+                )}
+              </button>
+            </React.Fragment>
           ))}
         </div>
       )}
@@ -1453,7 +1985,7 @@ function Composer(props: {
             }
             if (event.key === "Enter" || event.key === "Tab") {
               event.preventDefault();
-              chooseMention(mentionOptions[Math.min(mentionIndex, mentionOptions.length - 1)]);
+              void chooseMention(mentionOptions[Math.min(mentionIndex, mentionOptions.length - 1)]);
               return;
             }
             if (event.key === "Escape") {
@@ -1468,6 +2000,29 @@ function Composer(props: {
           }
         }}
       />
+      {/* Two agents in one message used to mean two answers that could not see
+          each other; now that is a choice the sender makes, not a default. */}
+      {mentionedAgentCount > 1 && (
+        <div className="agent-mode">
+          <span className="agent-mode-label">{t.modeLabel}</span>
+          <div className="agent-mode-switch" role="radiogroup" aria-label={t.modeLabel}>
+            {(["parallel", "relay"] as const).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                role="radio"
+                aria-checked={agentMode === mode}
+                className={agentMode === mode ? "active" : ""}
+                onClick={() => setAgentMode(mode)}
+              >
+                {mode === "parallel" ? <Users size={13} /> : <Zap size={13} />}
+                {mode === "parallel" ? t.modeParallel : t.modeRelay}
+              </button>
+            ))}
+          </div>
+          <small>{agentMode === "parallel" ? t.modeParallelHint : t.modeRelayHint}</small>
+        </div>
+      )}
       <div className="composer-toolbar">
         <div>
           <button
@@ -1487,6 +2042,8 @@ function Composer(props: {
           {sending ? <RefreshCw className="spin" size={17} /> : <Send size={17} />}
         </button>
       </div>
+      {addingAgent && <div className="composer-hint">{t.addingAgent}</div>}
+      {notice && !error && <div className="composer-notice"><Check size={13} /> {notice}</div>}
       {unresolvedMention && !error && (
         <div className="composer-hint">{t.unknownMention(unresolvedMention)}</div>
       )}
@@ -2048,8 +2605,48 @@ function AccountModal(props: {
   const [newPassword, setNewPassword] = useState("");
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+  // Safe to read during render: this modal only ever mounts from a click, well
+  // after hydration, so there is no server pass to disagree with.
+  const [notify, setNotify] = useState(desktopNotificationsOn);
+  const [notifyBlocked, setNotifyBlocked] = useState(false);
+  // Permission is requested from this click and nowhere else: a browser prompt
+  // on page load is the kind of thing people reflexively deny.
+  const toggleNotify = async (next: boolean) => {
+    setNotifyBlocked(false);
+    if (!next) {
+      window.localStorage.setItem(NOTIFY_KEY, "off");
+      setNotify(false);
+      return;
+    }
+    if (typeof Notification === "undefined") {
+      setNotifyBlocked(true);
+      return;
+    }
+    const permission = Notification.permission === "granted"
+      ? "granted"
+      : await Notification.requestPermission();
+    if (permission !== "granted") {
+      setNotifyBlocked(true);
+      return;
+    }
+    window.localStorage.setItem(NOTIFY_KEY, "on");
+    setNotify(true);
+  };
   return (
     <ModalShell title={t.settings} subtitle={`@${user.username} · ${user.role}`} onClose={onClose}>
+      <label className="check-row">
+        <input
+          type="checkbox"
+          checked={notify}
+          onChange={(event) => void toggleNotify(event.target.checked)}
+        />
+        <span>
+          <strong>{t.desktopNotifications}</strong>
+          <small>{t.desktopNotificationsHint}</small>
+        </span>
+      </label>
+      {notifyBlocked && <div className="form-error">{t.desktopBlocked}</div>}
+      <div className="modal-separator" />
       <form
         className="stack-form"
         onSubmit={async (event) => {
@@ -2102,18 +2699,15 @@ async function reactToMessage(
 }
 
 async function runAction(
-  message: Message,
+  runId: string | null,
   action: "cancel" | "retry",
   setError: React.Dispatch<React.SetStateAction<string>>,
 ) {
-  if (!message.runId) return;
+  if (!runId) return;
   try {
-    await api(`/api/agent-runs/${encodeURIComponent(message.runId)}/${action}`, { method: "POST" });
+    await api(`/api/agent-runs/${encodeURIComponent(runId)}/${action}`, { method: "POST" });
   } catch (cause) {
     setError(cause instanceof Error ? cause.message : String(cause));
   }
 }
 
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}

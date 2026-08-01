@@ -182,12 +182,20 @@ export const agentRuns = sqliteTable("agent_runs", {
   remoteContextId: text("remote_context_id"),
   lastError: text("last_error"),
   attempt: integer("attempt").notNull().default(0),
+  /** The agent's own `status.message` text, kept apart from its artifact output. */
+  progressText: text("progress_text"),
+  /** Set when several agents from one message must answer in sequence. */
+  relayGroupId: text("relay_group_id"),
+  relayIndex: integer("relay_index").notNull().default(0),
+  relayTotal: integer("relay_total").notNull().default(1),
   createdAt: text("created_at").notNull(),
   startedAt: text("started_at"),
   completedAt: text("completed_at"),
 }, (table) => [
   uniqueIndex("agent_runs_trigger_agent_unique").on(table.triggerMessageId, table.agentId),
   index("agent_runs_conversation_idx").on(table.agentId, table.channelId, table.threadRootId, table.createdAt),
+  index("agent_runs_relay_idx").on(table.relayGroupId, table.relayIndex),
+  index("agent_runs_status_idx").on(table.status, table.createdAt),
 ]);
 
 export const authRateLimits = sqliteTable("auth_rate_limits", {

@@ -1,4 +1,4 @@
-import type { AuthUser, ChannelEvent, ChannelEventKind, Env } from "./types";
+import type { AuthUser, ChannelEvent, ChannelEventKind, Env, PublicRun } from "./types";
 import { HttpError } from "./security";
 
 export interface ChannelAccess {
@@ -30,7 +30,21 @@ export interface MessageRow {
   agent_handle: string | null;
   agent_owner_user_id: string | null;
   run_trigger_user_id: string | null;
+  run_status: PublicRun["status"] | null;
+  run_attempt: number | null;
+  run_started_at: string | null;
+  run_progress_text: string | null;
+  run_relay_index: number | null;
+  run_relay_total: number | null;
 }
+
+/**
+ * Columns the message queries pull off `agent_runs`. Aliased because `m.*` is
+ * selected alongside them and both tables carry `status`.
+ */
+const RUN_COLUMNS = `ar.status AS run_status,ar.attempt AS run_attempt,
+      ar.started_at AS run_started_at,ar.progress_text AS run_progress_text,
+      ar.relay_index AS run_relay_index,ar.relay_total AS run_relay_total`;
 
 export interface PublicMessage {
   id: number;
@@ -48,6 +62,7 @@ export interface PublicMessage {
   runId: string | null;
   runTriggeredByUserId: string | null;
   agentOwnerUserId: string | null;
+  run: PublicRun | null;
   createdAt: string;
   updatedAt: string;
   reactions: Array<{ emoji: string; count: number; reacted: boolean }>;
@@ -140,7 +155,8 @@ export async function getPublicMessage(
 ): Promise<PublicMessage | null> {
   const row = await env.DB.prepare(
     `SELECT m.*,u.username,a.name AS agent_name,a.handle AS agent_handle,
-      a.owner_user_id AS agent_owner_user_id,trigger.sender_user_id AS run_trigger_user_id
+      a.owner_user_id AS agent_owner_user_id,trigger.sender_user_id AS run_trigger_user_id,
+      ${RUN_COLUMNS}
      FROM messages m
      LEFT JOIN users u ON u.id=m.sender_user_id
      LEFT JOIN agents a ON a.id=m.sender_agent_id
@@ -199,7 +215,8 @@ export async function listPublicMessages(
   binds.push(limit);
   const rows = await env.DB.prepare(
     `SELECT m.*,u.username,a.name AS agent_name,a.handle AS agent_handle,
-      a.owner_user_id AS agent_owner_user_id,trigger.sender_user_id AS run_trigger_user_id
+      a.owner_user_id AS agent_owner_user_id,trigger.sender_user_id AS run_trigger_user_id,
+      ${RUN_COLUMNS}
      FROM messages m
      LEFT JOIN users u ON u.id=m.sender_user_id
      LEFT JOIN agents a ON a.id=m.sender_agent_id
@@ -277,6 +294,17 @@ function mapMessage(
     runId: row.run_id,
     runTriggeredByUserId: row.run_trigger_user_id,
     agentOwnerUserId: row.agent_owner_user_id,
+    run: row.run_id && row.run_status
+      ? {
+        id: row.run_id,
+        status: row.run_status,
+        attempt: Number(row.run_attempt ?? 0),
+        startedAt: row.run_started_at,
+        progressText: row.run_progress_text,
+        relayIndex: Number(row.run_relay_index ?? 0),
+        relayTotal: Number(row.run_relay_total ?? 1),
+      }
+      : null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     reactions: reactions.map((reaction) => ({
