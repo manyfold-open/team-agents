@@ -1765,8 +1765,20 @@ button:disabled {
   box-shadow: var(--elev-3);
 }
 
-.message-card:hover .message-hover-actions {
+.message-card:hover .message-hover-actions,
+/* The keyboard half of the same affordance. Without these the row is only ever
+   revealed by a pointer, and `display: none` keeps it out of the tab order, so
+   reply / copy / react were unreachable without a mouse. Gated on
+   :focus-visible rather than :focus-within so that clicking a message to
+   select text does not pin its action row open over the message above. */
+.message-card:focus-visible .message-hover-actions,
+.message-card:has(:focus-visible) .message-hover-actions {
   display: flex;
+}
+
+.message-card:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
 }
 
 .message-hover-actions button {
@@ -1853,7 +1865,9 @@ button:disabled {
   gap: 1px;
 }
 
-.composer-toolbar > div button {
+/* Addressed by class, not by position: the send button is a sibling in this
+   row and must not inherit the mention button's size or muted colour. */
+.composer-mention-button {
   display: grid;
   width: 26px;
   height: 26px;
@@ -1867,12 +1881,12 @@ button:disabled {
     color var(--motion);
 }
 
-.composer-toolbar > div button:hover {
+.composer-mention-button:hover {
   color: var(--primary);
   background: var(--canvas-lavender);
 }
 
-.composer-toolbar > div span {
+.composer-mention-hint {
   min-width: 0;
   margin-left: 6px;
   overflow: hidden;
@@ -2411,7 +2425,7 @@ button:disabled {
     padding-bottom: 6px;
   }
 
-  .composer-toolbar > div button,
+  .composer-mention-button,
   .message-hover-actions button {
     width: 34px;
     height: 34px;
@@ -2601,7 +2615,7 @@ button:disabled {
     font-size: 9px;
   }
 
-  .composer-toolbar > div span {
+  .composer-mention-hint {
     display: none;
   }
 
@@ -3167,8 +3181,12 @@ button:disabled {
   text-align: left;
   transition: background var(--motion);
 }
-.search-hit:hover {
+/* Same treatment for pointer and keyboard: the arrow keys move the same
+   highlight the mouse does, so there is only ever one "this one" on screen. */
+.search-hit:hover,
+.search-hit.active {
   background: var(--canvas-lavender);
+  box-shadow: inset 0 0 0 1px var(--lavender-line);
 }
 .search-hit-main {
   display: block;
@@ -3226,4 +3244,142 @@ button:disabled {
   .agent-mode > small {
     flex-basis: 100%;
   }
+}
+
+/* ==========================================================================
+   Composer contract, agent legibility, and confirmable actions
+
+   Three things this stretch of the product used to leave implicit: how tall
+   the draft box is allowed to get, what an agent actually does before you
+   @ it, and whether a consequential click did anything at all.
+   ========================================================================== */
+
+/* --- Composer ----------------------------------------------------------- */
+
+/* The height is driven from JS against scrollHeight; min/max here are the
+   floor and the ceiling it grows between. `resize: none` stays: a hand-resized
+   box would fight the measurement on the very next keystroke. */
+.composer textarea {
+  overflow-y: auto;
+}
+
+/* Matched at the same specificity as `.composer-toolbar > div`, which sets a
+   1px gap for the mention cluster and would otherwise win here. */
+.composer-toolbar > .composer-send {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--s-sm);
+}
+
+.composer-keyhint {
+  color: var(--ink-mute);
+  font: var(--text-caption);
+  font-size: 11px;
+  letter-spacing: var(--track-caption);
+  white-space: nowrap;
+}
+
+/* Naming an agent turns Send into "spend a turn", so the button stops being a
+   bare icon and says which of the two it is about to do. */
+.send-button.will-run {
+  width: auto;
+  padding: 0 11px;
+  gap: 6px;
+  grid-auto-flow: column;
+}
+
+.send-button.will-run > span {
+  font: var(--text-button-cap);
+  letter-spacing: var(--track-button-cap);
+  white-space: nowrap;
+}
+
+@media (max-width: 560px) {
+  .composer-keyhint {
+    display: none;
+  }
+
+  /* The label is the first thing to go when the row runs out of room — the
+     accessible name on the button carries it either way. */
+  .send-button.will-run {
+    width: var(--icon-btn);
+    padding: 0;
+  }
+
+  .send-button.will-run > span {
+    display: none;
+  }
+}
+
+/* --- Mention menu: what an agent does, at the moment you pick it --------- */
+
+.mention-menu {
+  width: min(400px, calc(100vw - 40px));
+  max-height: min(46vh, 340px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.mention-menu em {
+  display: block;
+  overflow: hidden;
+  color: var(--ink-mute);
+  font-size: 11px;
+  font-style: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- Agent lists -------------------------------------------------------- */
+
+.agent-group-heading {
+  margin: var(--s-md) 0 0;
+  color: var(--ink-mute);
+  font: var(--text-micro-cap);
+  letter-spacing: var(--track-micro-cap);
+  text-transform: uppercase;
+}
+
+.agent-filter {
+  margin-top: var(--s-md);
+}
+
+.agent-add-row > span {
+  flex: 1;
+}
+
+.agent-add-row > button {
+  flex: 0 0 auto;
+}
+
+/* --- Confirming what cannot be undone by looking at it ------------------- */
+
+/* Disabling an agent pulls it out of every channel for everyone; resetting a
+   channel's memory changes state nobody can see. Both now say so first, in
+   place — this list already lives inside a modal, and a second layer of scrim
+   on top of the first is its own kind of confusion. */
+.confirm-strip {
+  display: flex;
+  margin-top: var(--s-sm);
+  padding: var(--s-sm);
+  grid-column: 1 / -1;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--error-line);
+  border-radius: var(--r-sm);
+  background: var(--error-soft);
+}
+
+.confirm-strip > span {
+  flex: 1 1 220px;
+  min-width: 0;
+  color: var(--ink);
+  font: var(--text-caption);
+  letter-spacing: var(--track-caption);
+}
+
+.confirm-strip > button {
+  flex: 0 0 auto;
 }

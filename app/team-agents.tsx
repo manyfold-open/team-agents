@@ -176,7 +176,7 @@ type Toast = {
   /** Where clicking the toast lands — the message it is about, not its channel. */
   focus?: FocusTarget;
 };
-type Modal = "channel" | "people" | "agents" | "account" | "search" | null;
+type Modal = "channel" | "people" | "agents" | "channel-agents" | "account" | "search" | null;
 /** Composer seed; `nonce` makes repeat inserts of the same handle distinct. */
 type Prefill = { text: string; nonce: number };
 
@@ -184,6 +184,21 @@ const copy = {
   zh: {
     welcome: "欢迎回到协作现场",
     authSub: "让人类与 A2A Agent 在同一个频道里一起推进工作。",
+    brandTagline: "人类 + A2A 工作区",
+    roleOwner: "工作区所有者",
+    roleMember: "成员",
+    preparingWorkspace: "正在准备你的工作区…",
+    loadingChannel: "正在加载频道…",
+    channelTopicFallback: "一个供专注协作的共享空间。",
+    blankPane: "创建或选择一个频道，开始协作。",
+    authSecurityNote: "密码经过安全哈希，Agent token 全程加密。",
+    welcomeMessage: "欢迎来到 Team Agents。邀请同事、创建频道，或连接你的第一个 A2A Agent。",
+    agentsCount: (n: number) => `${n} 个 Agent`,
+    replyCount: (n: number) => `${n} 条回复`,
+    storyEyebrow: "人类 + Agent 协作",
+    storyMeta: "8 人 · 3 个 Agent",
+    storyAsk: "@researcher 总结一下客户反馈，给出我们最该做的三件事。",
+    storyAnswer: "我找到了三个反复出现的主题。下面是可以直接拿去决策的版本…",
     login: "登录",
     register: "创建账号",
     username: "用户名",
@@ -200,6 +215,24 @@ const copy = {
     logout: "退出登录",
     members: "成员",
     channelAgents: "频道 Agent",
+    channelAgentsSubtitle: (n: number) => `${n} 个 Agent 可以在这个频道被 @`,
+    channelAgentsEmpty: "这个频道还没有 Agent。把你的 Agent 加进来，就能在消息里 @ 它。",
+    viewChannelAgents: (n: number) => `查看频道里的 ${n} 个 Agent`,
+    manageAgents: "管理我的 Agent",
+    myAgents: "我的 Agent",
+    otherMembersAgents: "工作区其他成员的 Agent",
+    filterAgents: "筛选 Agent",
+    noAgentMatch: "没有匹配的 Agent。",
+    agentNoDescription: "这个 Agent 还没有填写职责说明。",
+    emptyAgents: "还没有连接 Agent。",
+    agentsSubtitle: "连接和管理你的 A2A Agent。把它加进某个频道，在那个频道的「频道 Agent」里操作。",
+    workspaceMember: "工作区成员",
+    historyLine: (n: number) => `发送 ${n} 条历史消息`,
+    agentLeft: (name: string) => `${name} 已移出本频道`,
+    memoryResetDone: "已重置这个频道的 A2A 记忆",
+    disableConfirm: (handle: string) =>
+      `停用 @${handle}？它会退出所有频道、清空各频道记忆、并取消正在跑的任务。之后可以重新启用。`,
+    disableConfirmAction: "确认停用",
     joined: "已加入",
     join: "加入频道",
     newChannel: "创建频道",
@@ -216,6 +249,8 @@ const copy = {
     threadPlaceholder: "回复这个讨论串",
     reply: "回复",
     send: "发送",
+    sendHint: "Enter 发送 · Shift+Enter 换行",
+    sendRun: (n: number) => `发送并运行 ${n} 个 Agent`,
     noMessages: "这里还很安静。发出第一条消息，或 @ 一个 Agent 开始协作。",
     addAgent: "连接新 Agent",
     connectManyfold: "从 Manyfold 连接",
@@ -345,6 +380,21 @@ const copy = {
   en: {
     welcome: "Welcome back to the work",
     authSub: "Bring people and A2A agents together in the same channel.",
+    brandTagline: "Human + A2A workspace",
+    roleOwner: "Workspace owner",
+    roleMember: "Member",
+    preparingWorkspace: "Preparing your workspace…",
+    loadingChannel: "Loading channel…",
+    channelTopicFallback: "A shared space for focused collaboration.",
+    blankPane: "Create or choose a channel to start collaborating.",
+    authSecurityNote: "Passwords are securely hashed. Agent tokens stay encrypted.",
+    welcomeMessage: "Welcome to Team Agents. Invite your teammates, create a channel, or connect your first A2A agent.",
+    agentsCount: (n: number) => `${n} agent${n === 1 ? "" : "s"}`,
+    replyCount: (n: number) => `${n} ${n === 1 ? "reply" : "replies"}`,
+    storyEyebrow: "Human + agent collaboration",
+    storyMeta: "8 people · 3 agents",
+    storyAsk: "@researcher summarize the customer feedback and suggest our top three actions.",
+    storyAnswer: "I found three repeated themes. Here’s the decision-ready version…",
     login: "Sign in",
     register: "Create account",
     username: "Username",
@@ -361,6 +411,24 @@ const copy = {
     logout: "Sign out",
     members: "Members",
     channelAgents: "Channel agents",
+    channelAgentsSubtitle: (n: number) => `${n} agent${n === 1 ? "" : "s"} can be mentioned here`,
+    channelAgentsEmpty: "No agents in this channel yet. Add one of yours and you can @mention it in a message.",
+    viewChannelAgents: (n: number) => `See the ${n} agent${n === 1 ? "" : "s"} in this channel`,
+    manageAgents: "Manage my agents",
+    myAgents: "My agents",
+    otherMembersAgents: "Agents from other members",
+    filterAgents: "Filter agents",
+    noAgentMatch: "No agents match that.",
+    agentNoDescription: "This agent has no role description yet.",
+    emptyAgents: "No agents connected yet.",
+    agentsSubtitle: "Connect and manage your A2A agents. Adding one to a channel happens in that channel’s agent panel.",
+    workspaceMember: "a workspace member",
+    historyLine: (n: number) => `${n} history messages sent`,
+    agentLeft: (name: string) => `${name} left this channel`,
+    memoryResetDone: "A2A memory reset for this channel",
+    disableConfirm: (handle: string) =>
+      `Disable @${handle}? It leaves every channel, its channel memory is cleared, and running tasks are canceled. You can re-enable it later.`,
+    disableConfirmAction: "Disable",
     joined: "Joined",
     join: "Join channel",
     newChannel: "Create a channel",
@@ -377,6 +445,8 @@ const copy = {
     threadPlaceholder: "Reply to this thread",
     reply: "Reply",
     send: "Send",
+    sendHint: "Enter to send · Shift+Enter for a new line",
+    sendRun: (n: number) => `Send & run ${n} agent${n === 1 ? "" : "s"}`,
     noMessages: "It’s quiet here. Send the first message or @mention an agent to get moving.",
     addAgent: "Connect a new agent",
     connectManyfold: "Connect from Manyfold",
@@ -1278,7 +1348,7 @@ export function TeamAgentsApp() {
     void openThread(root);
   }, [messages, loadingChannel, openThread]);
 
-  if (!boot) return <LoadingScreen />;
+  if (!boot) return <LoadingScreen locale={locale} />;
   if (!boot.authenticated || !boot.user) {
     return (
       <AuthScreen
@@ -1316,7 +1386,7 @@ export function TeamAgentsApp() {
           <div className="brand-mark"><Sparkles size={18} /></div>
           <div>
             <strong>Team Agents</strong>
-            <span>Human + A2A workspace</span>
+            <span>{t.brandTagline}</span>
           </div>
           <button className="icon-button sidebar-close" onClick={() => setSidebarOpen(false)} aria-label={t.close}>
             <X size={18} />
@@ -1413,7 +1483,7 @@ export function TeamAgentsApp() {
             <Avatar name={boot.user.username} />
             <span>
               <strong>{boot.user.username}</strong>
-              <small>{boot.user.role === "owner" ? "Workspace owner" : "Member"}</small>
+              <small>{boot.user.role === "owner" ? t.roleOwner : t.roleMember}</small>
             </span>
             <ChevronDown size={15} />
           </button>
@@ -1421,7 +1491,8 @@ export function TeamAgentsApp() {
             <button className="icon-button" onClick={toggleLocale} title={t.language}>
               <Languages size={17} />
             </button>
-            <button className="icon-button" onClick={() => setModal("agents")} title={t.agents}>
+            {/* A gear opens settings. Agents have their own row above. */}
+            <button className="icon-button" onClick={() => setModal("account")} title={t.settings}>
               <Settings size={17} />
             </button>
           </div>
@@ -1440,14 +1511,19 @@ export function TeamAgentsApp() {
                     {selectedChannel.isPrivate ? t.private : t.public}
                   </span>
                 </div>
-                <p>{selectedChannel.topic || "A shared space for focused collaboration."}</p>
+                <p>{selectedChannel.topic || t.channelTopicFallback}</p>
               </div>
               <div className="channel-actions">
                 <button className="member-pill" onClick={() => setModal("people")}>
                   <Users size={16} />
                   <span>{selectedChannel.memberCount}</span>
                 </button>
-                <button className="member-pill agent-pill" onClick={() => setModal("agents")}>
+                {/* A channel-scoped question gets a channel-scoped answer. */}
+                <button
+                  className="member-pill agent-pill"
+                  title={t.channelAgents}
+                  onClick={() => setModal("channel-agents")}
+                >
                   <Bot size={16} />
                   <span>{selectedChannel.agentCount}</span>
                 </button>
@@ -1488,7 +1564,7 @@ export function TeamAgentsApp() {
                       <ChannelIntro channel={selectedChannel} locale={locale} />
                     )}
                     {loadingChannel ? (
-                      <div className="inline-loader"><RefreshCw className="spin" size={18} /> Loading channel…</div>
+                      <div className="inline-loader"><RefreshCw className="spin" size={18} /> {t.loadingChannel}</div>
                     ) : messages.length ? (
                       messages.map((message, index) => {
                         const previous = messages[index - 1];
@@ -1525,15 +1601,22 @@ export function TeamAgentsApp() {
                         <p>{t.noMessages}</p>
                         {/* "@ an agent" is not actionable in a channel with no
                             agents in it, so the way to get one is right here. */}
-                        {rosterAgents.length === 0 && (
-                          <button className="primary-button" onClick={() => setModal("agents")}>
-                            <Bot size={16} />
-                            {(boot.agents ?? []).some((candidate) =>
-                              candidate.ownerUserId === boot.user!.id && candidate.enabled)
-                              ? t.emptyAdd
-                              : t.emptyConnect}
-                          </button>
-                        )}
+                        {rosterAgents.length === 0 && (() => {
+                          // Two different problems: having no agent at all, and
+                          // having one that is not in here. They now have two
+                          // different screens, so the CTA has to pick.
+                          const hasOwn = (boot.agents ?? []).some((candidate) =>
+                            candidate.ownerUserId === boot.user!.id && candidate.enabled);
+                          return (
+                            <button
+                              className="primary-button"
+                              onClick={() => setModal(hasOwn ? "channel-agents" : "agents")}
+                            >
+                              <Bot size={16} />
+                              {hasOwn ? t.emptyAdd : t.emptyConnect}
+                            </button>
+                          );
+                        })()}
                       </div>
                     )}
                     {/* Only reachable after a jump has parked the transcript
@@ -1578,7 +1661,7 @@ export function TeamAgentsApp() {
           <div className="blank-pane">
             <Sparkles size={32} />
             <h2>Team Agents</h2>
-            <p>Create or choose a channel to start collaborating.</p>
+            <p>{t.blankPane}</p>
           </div>
         )}
       </section>
@@ -1608,7 +1691,7 @@ export function TeamAgentsApp() {
               onMention={(handle) => mentionInComposer(handle, true)}
             />
             <div className="thread-divider">
-              <span>{threadMessages.length} {locale === "zh" ? "条回复" : "replies"}</span>
+              <span>{t.replyCount(threadMessages.length)}</span>
             </div>
             {threadMessages.map((message) => (
               <MessageCard
@@ -1668,6 +1751,22 @@ export function TeamAgentsApp() {
           currentUser={boot.user}
           onClose={() => setModal(null)}
           onInvited={() => loadChannel(selectedChannel.id)}
+          onOpenAgents={() => setModal("channel-agents")}
+        />
+      )}
+      {modal === "channel-agents" && selectedChannel && (
+        <ChannelAgentsModal
+          locale={locale}
+          channel={selectedChannel}
+          channelAgents={rosterAgents}
+          agents={boot.agents ?? []}
+          currentUser={boot.user}
+          onClose={() => setModal(null)}
+          onManage={() => setModal("agents")}
+          onChanged={async () => {
+            await refreshBootstrap();
+            await loadChannel(selectedChannel.id);
+          }}
         />
       )}
       {modal === "agents" && (
@@ -1675,8 +1774,6 @@ export function TeamAgentsApp() {
           locale={locale}
           currentUser={boot.user}
           agents={boot.agents ?? []}
-          channel={selectedChannel}
-          channelAgents={rosterAgents}
           onClose={() => setModal(null)}
           onChanged={async () => {
             await refreshBootstrap();
@@ -1686,6 +1783,7 @@ export function TeamAgentsApp() {
       )}
       <ToastStack
         toasts={toasts}
+        locale={locale}
         onOpen={jumpToMessage}
         onDismiss={(id) => setToasts((current) => current.filter((entry) => entry.id !== id))}
       />
@@ -1713,12 +1811,12 @@ export function TeamAgentsApp() {
   );
 }
 
-function LoadingScreen() {
+function LoadingScreen({ locale }: { locale: Locale }) {
   return (
     <div className="loading-screen">
       <div className="brand-orbit"><Sparkles size={24} /></div>
       <strong>Team Agents</strong>
-      <span>Preparing your workspace…</span>
+      <span>{copy[locale].preparingWorkspace}</span>
     </div>
   );
 }
@@ -1759,24 +1857,24 @@ function AuthScreen(props: {
           <strong>Team Agents</strong>
         </div>
         <div className="story-copy">
-          <span className="eyebrow"><Zap size={14} /> Human + agent collaboration</span>
+          <span className="eyebrow"><Zap size={14} /> {t.storyEyebrow}</span>
           <h1>{t.welcome}</h1>
           <p>{t.authSub}</p>
         </div>
         <div className="story-channel">
           <div className="story-channel-head">
             <span><Hash size={16} /> product-launch</span>
-            <span>8 people · 3 agents</span>
+            <span>{t.storyMeta}</span>
           </div>
           <div className="story-message">
             <Avatar name="Mira" />
-            <div><strong>Mira</strong><p>@researcher summarize the customer feedback and suggest our top three actions.</p></div>
+            <div><strong>Mira</strong><p>{t.storyAsk}</p></div>
           </div>
           <div className="story-message agent-story">
             <Avatar name="Researcher" agent />
             <div>
               <strong>Researcher <em>AGENT</em></strong>
-              <p>I found three repeated themes. Here’s the decision-ready version…</p>
+              <p>{t.storyAnswer}</p>
               <span className="stream-line" />
             </div>
           </div>
@@ -1824,7 +1922,7 @@ function AuthScreen(props: {
             {busy ? <><RefreshCw className="spin" size={17} /> {t.signingIn}</> : mode === "login" ? t.login : t.register}
           </button>
           <small className="auth-note">
-            <ShieldCheck size={14} /> Passwords are securely hashed. Agent tokens stay encrypted.
+            <ShieldCheck size={14} /> {t.authSecurityNote}
           </small>
         </form>
       </section>
@@ -1922,8 +2020,9 @@ function RunTray(props: {
   );
 }
 
-function ToastStack({ toasts, onOpen, onDismiss }: {
+function ToastStack({ toasts, locale, onOpen, onDismiss }: {
   toasts: Toast[];
+  locale: Locale;
   onOpen: (target: FocusTarget) => void;
   onDismiss: (id: number) => void;
 }) {
@@ -1947,7 +2046,7 @@ function ToastStack({ toasts, onOpen, onDismiss }: {
             <strong>{toast.title}</strong>
             <small>{toast.body}</small>
           </button>
-          <button className="toast-close" onClick={() => onDismiss(toast.id)} aria-label="Close">
+          <button className="toast-close" onClick={() => onDismiss(toast.id)} aria-label={copy[locale].close}>
             <X size={14} />
           </button>
         </div>
@@ -2020,15 +2119,27 @@ function MessageCard(props: {
     || currentUser.role === "owner"
   );
   if (system) {
+    // The welcome line is seeded in SQL at registration, where there is no
+    // locale to seed it in. Its client id is stable, so the reader's language
+    // is applied here instead; the stored English stays as the fallback.
+    const body = message.clientMessageId === "system:welcome"
+      ? t.welcomeMessage
+      : message.content;
     return (
       <div className="system-message" data-message-id={message.id}>
-        <Sparkles size={15} /><span>{message.content}</span>
+        <Sparkles size={15} /><span>{body}</span>
       </div>
     );
   }
   return (
     <article
       data-message-id={message.id}
+      // Focusable so the action row is reachable without a pointer: the row is
+      // `display: none` until the card is hovered or focused, which had kept
+      // reply, copy and the reactions off the keyboard entirely. One stop per
+      // message rather than five — tabbing into a card reveals its actions and
+      // the next Tab walks into them.
+      tabIndex={0}
       className={`message-card ${agent ? "from-agent" : ""} ${compact ? "compact" : ""} ${highlighted ? "is-landed" : ""}`}
     >
       <Avatar name={message.sender.name} agent={agent} />
@@ -2097,7 +2208,7 @@ function MessageCard(props: {
           ))}
           {!isThreadRoot && message.replyCount > 0 && (
             <button className="thread-count" onClick={onThread}>
-              <MessageCircle size={13} /> {message.replyCount} {locale === "zh" ? "条回复" : "replies"}
+              <MessageCircle size={13} /> {t.replyCount(message.replyCount)}
             </button>
           )}
         </div>
@@ -2156,6 +2267,17 @@ function Composer(props: {
   const [mentionDismissed, setMentionDismissed] = useState(false);
   const [appliedPrefill, setAppliedPrefill] = useState(0);
   const textarea = useRef<HTMLTextAreaElement>(null);
+  const activeOption = useRef<HTMLButtonElement>(null);
+  // This is the box every agent prompt is written in, and those are rarely one
+  // line. Measured rather than declared: `rows` cannot follow content, and the
+  // CSS max-height is what caps the growth before the transcript loses room.
+  // Reset to `auto` first or scrollHeight only ever reports the current height.
+  useLayoutEffect(() => {
+    const node = textarea.current;
+    if (!node) return;
+    node.style.height = "auto";
+    node.style.height = `${node.scrollHeight}px`;
+  }, [value]);
   const mentionMatch = value.match(/(?:^|\s)@([\w-]*)$/);
   const mentionQuery = mentionMatch?.[1]?.toLowerCase() ?? null;
   const mentionOptions = useMemo(() => {
@@ -2163,10 +2285,12 @@ function Composer(props: {
     const inChannel = [
       ...rosterAgents
         .filter((agent) => agent.handle.includes(mentionQuery))
-        .map((agent) => ({ id: agent.id, label: agent.name, handle: agent.handle, kind: "agent" as const, agent: null })),
+        // The description rides along: this menu is where an agent is actually
+        // chosen, and a bare handle is not enough to choose between three of them.
+        .map((agent) => ({ id: agent.id, label: agent.name, handle: agent.handle, description: agent.description, kind: "agent" as const, agent: null })),
       ...rosterUsers
         .filter((user) => user.username.toLowerCase().includes(mentionQuery))
-        .map((user) => ({ id: user.id, label: user.username, handle: user.username, kind: "user" as const, agent: null })),
+        .map((user) => ({ id: user.id, label: user.username, handle: user.username, description: "", kind: "user" as const, agent: null })),
     ].slice(0, 6);
     // Listed last and marked: choosing one is not just a mention, it puts the
     // agent in the channel. Sliced separately so a busy roster cannot squeeze
@@ -2175,12 +2299,17 @@ function Composer(props: {
       ...inChannel,
       ...ownAgents
         .filter((agent) => agent.handle.includes(mentionQuery))
-        .map((agent) => ({ id: agent.id, label: agent.name, handle: agent.handle, kind: "add-agent" as const, agent }))
+        .map((agent) => ({ id: agent.id, label: agent.name, handle: agent.handle, description: agent.description, kind: "add-agent" as const, agent }))
         .slice(0, 3),
     ];
   }, [mentionQuery, rosterAgents, rosterUsers, ownAgents]);
   const menuOpen = mentionOptions.length > 0 && !mentionDismissed;
   const mentionIndex = mentionCursor.query === mentionQuery ? mentionCursor.index : 0;
+  // Rows carry a description now, so the menu can scroll — the arrow keys have
+  // to bring the highlighted row along or they walk out of sight.
+  useEffect(() => {
+    activeOption.current?.scrollIntoView({ block: "nearest" });
+  }, [mentionIndex, mentionQuery]);
   const moveMention = (step: number) => {
     setMentionCursor({
       query: mentionQuery,
@@ -2221,6 +2350,11 @@ function Composer(props: {
     const lower = value.toLowerCase();
     return rosterAgents.filter((agent) => mentionPosition(lower, agent.handle) >= 0).length;
   }, [value, rosterAgents]);
+  // Sending a draft that names an agent is not the same act as sending a
+  // message: it spends a real turn on whatever is in the box, and neither the
+  // message nor the run can be taken back. The button says which one it is.
+  const willRun = mentionedAgentCount > 0;
+  const sendLabel = willRun ? t.sendRun(mentionedAgentCount) : t.send;
   // A handle nobody in this channel answers to would post as plain text and
   // silently start no run at all, so it gets called out before send.
   const unresolvedMention = useMemo(() => {
@@ -2287,12 +2421,17 @@ function Composer(props: {
                 </div>
               )}
               <button
+                ref={index === mentionIndex ? activeOption : null}
                 className={index === mentionIndex ? "active" : ""}
                 onMouseEnter={() => setMentionCursor({ query: mentionQuery, index })}
                 onClick={() => void chooseMention(option)}
               >
                 <Avatar name={option.label} agent={option.kind !== "user"} />
-                <span><strong>{option.label}</strong><small>@{option.handle}</small></span>
+                <span>
+                  <strong>{option.label}</strong>
+                  <small>@{option.handle}</small>
+                  {option.description && <em>{option.description}</em>}
+                </span>
                 {option.kind === "agent" && <span className="agent-badge">AGENT</span>}
                 {option.kind === "add-agent" && (
                   <span className="agent-badge add">
@@ -2365,6 +2504,7 @@ function Composer(props: {
       <div className="composer-toolbar">
         <div>
           <button
+            className="composer-mention-button"
             title={t.mentionHint}
             aria-label={t.mentionHint}
             onClick={() => {
@@ -2375,11 +2515,21 @@ function Composer(props: {
           >
             <AtSign size={18} />
           </button>
-          <span>{t.mentionHint}</span>
+          <span className="composer-mention-hint">{t.mentionHint}</span>
         </div>
-        <button className="send-button" disabled={!value.trim() || sending} onClick={submit} aria-label={t.send}>
-          {sending ? <RefreshCw className="spin" size={17} /> : <Send size={17} />}
-        </button>
+        <div className="composer-send">
+          <span className="composer-keyhint">{t.sendHint}</span>
+          <button
+            className={`send-button ${willRun ? "will-run" : ""}`}
+            disabled={!value.trim() || sending}
+            onClick={submit}
+            aria-label={sendLabel}
+            title={sendLabel}
+          >
+            {sending ? <RefreshCw className="spin" size={17} /> : <Send size={17} />}
+            {willRun && <span>{t.sendRun(mentionedAgentCount)}</span>}
+          </button>
+        </div>
       </div>
       {addingAgent && <div className="composer-hint">{t.addingAgent}</div>}
       {notice && !error && <div className="composer-notice"><Check size={13} /> {notice}</div>}
@@ -2394,30 +2544,48 @@ function Composer(props: {
 function JoinChannel({ channel, locale, onJoin }: { channel: Channel; locale: Locale; onJoin: () => Promise<void> }) {
   const t = copy[locale];
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
   return (
     <div className="join-channel">
       <div className="intro-icon"><Hash size={28} /></div>
       <h2>#{channel.name}</h2>
       <p>{channel.topic}</p>
-      <span>{channel.memberCount} {t.members.toLowerCase()} · {channel.agentCount} agents</span>
+      <span>{channel.memberCount} {t.members.toLowerCase()} · {t.agentsCount(channel.agentCount)}</span>
       <button
         className="primary-button"
         disabled={busy}
         onClick={async () => {
           setBusy(true);
-          await onJoin();
-          setBusy(false);
+          setError("");
+          try {
+            await onJoin();
+          } catch (cause) {
+            // Without this the throw skipped the reset below and left the
+            // button spinning at a reader who was never told anything failed.
+            setError(cause instanceof Error ? cause.message : String(cause));
+          } finally {
+            setBusy(false);
+          }
         }}
       >
         {busy ? <RefreshCw className="spin" size={16} /> : <Plus size={16} />} {t.join}
       </button>
+      {error && <div className="form-error">{error}</div>}
     </div>
   );
 }
 
-function ModalShell(props: { title: string; subtitle?: string; onClose: () => void; children: React.ReactNode; wide?: boolean }) {
+function ModalShell(props: {
+  title: string;
+  subtitle?: string;
+  locale: Locale;
+  onClose: () => void;
+  children: React.ReactNode;
+  wide?: boolean;
+}) {
   const card = useRef<HTMLElement>(null);
   const { onClose } = props;
+  const close = copy[props.locale].close;
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
@@ -2431,7 +2599,7 @@ function ModalShell(props: { title: string; subtitle?: string; onClose: () => vo
   }, []);
   return (
     <div className="modal-layer">
-      <button className="modal-scrim" onClick={props.onClose} aria-label="Close" />
+      <button className="modal-scrim" onClick={props.onClose} aria-label={close} />
       <section
         ref={card}
         tabIndex={-1}
@@ -2442,7 +2610,8 @@ function ModalShell(props: { title: string; subtitle?: string; onClose: () => vo
       >
         <header>
           <div><h2>{props.title}</h2>{props.subtitle && <p>{props.subtitle}</p>}</div>
-          <button className="icon-button" onClick={props.onClose}><X size={18} /></button>
+          {/* Icon-only: without a label its accessible name was empty. */}
+          <button className="icon-button" onClick={props.onClose} aria-label={close}><X size={18} /></button>
         </header>
         <div className="modal-body">{props.children}</div>
       </section>
@@ -2469,7 +2638,7 @@ function ChannelModal({ locale, onClose, onCreated }: { locale: Locale; onClose:
     }
   };
   return (
-    <ModalShell title={t.newChannel} subtitle={locale === "zh" ? "为一个项目、主题或团队建立共同空间。" : "Give a project, topic, or team a shared home."} onClose={onClose}>
+    <ModalShell locale={locale} title={t.newChannel} subtitle={locale === "zh" ? "为一个项目、主题或团队建立共同空间。" : "Give a project, topic, or team a shared home."} onClose={onClose}>
       <form className="stack-form" onSubmit={submit}>
         <label><span>{t.channelName}</span><input value={name} onChange={(event) => setName(event.target.value)} placeholder="e.g. product-launch" required autoFocus /></label>
         <label><span>{t.channelTopic}</span><textarea value={topic} onChange={(event) => setTopic(event.target.value)} rows={3} /></label>
@@ -2492,13 +2661,14 @@ function PeopleModal(props: {
   currentUser: User;
   onClose: () => void;
   onInvited: () => Promise<void>;
+  onOpenAgents: () => void;
 }) {
-  const { locale, channel, users, agents, currentUser, onClose, onInvited } = props;
+  const { locale, channel, users, agents, currentUser, onClose, onInvited, onOpenAgents } = props;
   const t = copy[locale];
   const [username, setUsername] = useState("");
   const [error, setError] = useState("");
   return (
-    <ModalShell title={`#${channel.name}`} subtitle={`${users.length} ${t.members.toLowerCase()} · ${agents.length} agents`} onClose={onClose}>
+    <ModalShell locale={locale} title={`#${channel.name}`} subtitle={`${users.length} ${t.members.toLowerCase()} · ${t.agentsCount(agents.length)}`} onClose={onClose}>
       {(channel.role === "manager" || currentUser.role === "owner") && (
         <form
           className="inline-invite"
@@ -2526,11 +2696,162 @@ function PeopleModal(props: {
         {users.map((user) => (
           <div className="roster-row" key={user.id}><Avatar name={user.username} /><span><strong>{user.username}</strong><small>{user.role}</small></span></div>
         ))}
-        <h3>{t.channelAgents}</h3>
-        {agents.map((agent) => (
-          <div className="roster-row" key={agent.id}><Avatar name={agent.name} agent /><span><strong>{agent.name} <em className="agent-badge">AGENT</em></strong><small>@{agent.handle} · {t.ownedBy} {agent.ownerUsername}</small></span></div>
-        ))}
       </div>
+      {/* The agents were listed here too, read-only — two lists of the same
+          thing and neither of them actionable. One list, one place. */}
+      <div className="modal-separator" />
+      <button className="secondary-button" onClick={onOpenAgents}>
+        <Bot size={15} /> {t.viewChannelAgents(agents.length)}
+      </button>
+    </ModalShell>
+  );
+}
+
+/**
+ * The channel-scoped answer to "who can I @ here, and what do they do".
+ *
+ * Deliberately separate from the agent manager: the header pill asks a question
+ * about this channel, and used to be answered with a workspace-wide settings
+ * screen where channel membership was a button on the side of each card.
+ * Every mutation in here reports back — channel membership and A2A memory are
+ * both invisible state, so silence is indistinguishable from failure.
+ */
+function ChannelAgentsModal(props: {
+  locale: Locale;
+  channel: Channel;
+  channelAgents: RosterAgent[];
+  agents: Agent[];
+  currentUser: User;
+  onClose: () => void;
+  onChanged: () => Promise<void>;
+  onManage: () => void;
+}) {
+  const { locale, channel, channelAgents, agents, currentUser, onClose, onChanged, onManage } = props;
+  const t = copy[locale];
+  const [busy, setBusy] = useState("");
+  const [notice, setNotice] = useState("");
+  const [error, setError] = useState("");
+  const present = new Set(channelAgents.map((agent) => agent.id));
+  const addable = agents.filter((agent) =>
+    agent.enabled && agent.ownerUserId === currentUser.id && !present.has(agent.id));
+  const channelPath = `/api/channels/${encodeURIComponent(channel.id)}/agents`;
+  const act = async (key: string, call: () => Promise<unknown>, done: string) => {
+    setBusy(key);
+    setError("");
+    setNotice("");
+    try {
+      await call();
+      setNotice(done);
+      window.setTimeout(() => setNotice(""), 4_000);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusy("");
+    }
+  };
+  return (
+    <ModalShell
+      locale={locale}
+      title={t.channelAgents}
+      subtitle={`#${channel.name} · ${t.channelAgentsSubtitle(channelAgents.length)}`}
+      onClose={onClose}
+      wide
+    >
+      {notice && <div className="form-success"><Check size={15} /> {notice}</div>}
+      {error && <div className="form-error">{error}</div>}
+      <div className="agent-list">
+        {channelAgents.length === 0 && (
+          <div className="empty-agents"><Bot size={28} /><p>{t.channelAgentsEmpty}</p></div>
+        )}
+        {channelAgents.map((agent) => {
+          const mine = agent.ownerUserId === currentUser.id;
+          return (
+            <article className="agent-card" key={agent.id}>
+              <Avatar name={agent.name} agent />
+              <div className="agent-card-main">
+                <header><strong>{agent.name}</strong><span>@{agent.handle}</span></header>
+                <p>{agent.description || t.agentNoDescription}</p>
+                <small>{t.ownedBy} {agent.ownerUsername}</small>
+              </div>
+              <div className="agent-card-actions">
+                {/* Owner-only on the server too — offering it to anyone else
+                    would just be a 403 with extra steps. */}
+                {mine && (
+                  <button
+                    className="secondary-button"
+                    disabled={Boolean(busy)}
+                    onClick={() => void act(
+                      `reset:${agent.id}`,
+                      () => api(`${channelPath}/${encodeURIComponent(agent.id)}/reset`, {
+                        method: "POST",
+                        body: JSON.stringify({}),
+                      }),
+                      t.memoryResetDone,
+                    )}
+                  >
+                    <RefreshCw className={busy === `reset:${agent.id}` ? "spin" : ""} size={14} />
+                    {t.resetMemory}
+                  </button>
+                )}
+                {(mine || currentUser.role === "owner") && (
+                  <button
+                    className="secondary-button danger-text"
+                    disabled={Boolean(busy)}
+                    onClick={() => void act(
+                      `remove:${agent.id}`,
+                      async () => {
+                        await api(`${channelPath}/${encodeURIComponent(agent.id)}`, { method: "DELETE" });
+                        await onChanged();
+                      },
+                      t.agentLeft(agent.name),
+                    )}
+                  >
+                    {t.removeFromChannel}
+                  </button>
+                )}
+              </div>
+            </article>
+          );
+        })}
+      </div>
+      {addable.length > 0 && (
+        <>
+          <div className="modal-separator" />
+          <div className="roster-list">
+            <h3>{t.otherAgents}</h3>
+            {addable.map((agent) => (
+              <div className="roster-row agent-add-row" key={agent.id}>
+                <Avatar name={agent.name} agent />
+                <span>
+                  <strong>{agent.name}</strong>
+                  <small>@{agent.handle}{agent.description ? ` · ${agent.description}` : ""}</small>
+                </span>
+                <button
+                  className="secondary-button"
+                  disabled={Boolean(busy)}
+                  onClick={() => void act(
+                    `add:${agent.id}`,
+                    async () => {
+                      await api(`${channelPath}/${encodeURIComponent(agent.id)}`, { method: "POST" });
+                      await onChanged();
+                    },
+                    t.agentJoined(agent.name),
+                  )}
+                >
+                  {busy === `add:${agent.id}`
+                    ? <RefreshCw className="spin" size={14} />
+                    : <Plus size={14} />}
+                  {t.addToChannel}
+                </button>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+      <div className="modal-separator" />
+      <button className="secondary-button" onClick={onManage}>
+        <Bot size={15} /> {t.manageAgents}
+      </button>
     </ModalShell>
   );
 }
@@ -2562,6 +2883,21 @@ function SearchModal(props: {
   // Typing outruns the network: only the response to the query still in the box
   // may render, or an earlier, slower one would overwrite it.
   const requestSeq = useRef(0);
+  // ⌘K opens this without touching the mouse, so it should also be possible to
+  // reach a result without one. The mention menu already works this way; this
+  // was the one list in the product that made you reach for the pointer.
+  // Keyed by the search it belongs to, the way the mention menu keys its own
+  // cursor: a changed query starts at the top with no effect round-trip, while
+  // "load more" appends without throwing the reader back to the first result.
+  const resultKey = `${query.trim()}|${scopeChannel}|${agentsOnly}`;
+  const [hitCursor, setHitCursor] = useState({ key: "", index: 0 });
+  const cursor = hitCursor.key === resultKey
+    ? Math.min(hitCursor.index, Math.max(0, hits.length - 1))
+    : 0;
+  const activeHit = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    activeHit.current?.scrollIntoView({ block: "nearest" });
+  }, [cursor]);
 
   const buildUrl = useCallback((before?: number) => {
     const params = new URLSearchParams({ q: query.trim() });
@@ -2624,13 +2960,31 @@ function SearchModal(props: {
     }
   };
 
+  const openHit = (hit: SearchHit) => {
+    onOpen({ channelId: hit.channelId, messageId: hit.messageId, threadRootId: hit.threadRootId });
+    onClose();
+  };
+
   return (
-    <ModalShell title={t.search} subtitle={t.searchHint} onClose={onClose} wide>
+    <ModalShell locale={locale} title={t.search} subtitle={t.searchHint} onClose={onClose} wide>
       <label className="search-field">
         <Search size={17} />
         <input
           value={query}
           onChange={(event) => updateQuery(event.target.value)}
+          onKeyDown={(event) => {
+            if (!hits.length) return;
+            if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+              event.preventDefault();
+              const step = event.key === "ArrowDown" ? 1 : -1;
+              setHitCursor({ key: resultKey, index: (cursor + step + hits.length) % hits.length });
+              return;
+            }
+            if (event.key === "Enter") {
+              event.preventDefault();
+              openHit(hits[cursor]);
+            }
+          }}
           placeholder={t.searchPlaceholder}
           autoFocus
           spellCheck={false}
@@ -2670,18 +3024,13 @@ function SearchModal(props: {
         {query.trim() && !busy && !hits.length && (
           <p className="search-placeholder">{t.searchEmpty}</p>
         )}
-        {hits.map((hit) => (
+        {hits.map((hit, index) => (
           <button
-            className="search-hit"
+            className={`search-hit ${index === cursor ? "active" : ""}`}
             key={hit.messageId}
-            onClick={() => {
-              onOpen({
-                channelId: hit.channelId,
-                messageId: hit.messageId,
-                threadRootId: hit.threadRootId,
-              });
-              onClose();
-            }}
+            ref={index === cursor ? activeHit : null}
+            onMouseEnter={() => setHitCursor({ key: resultKey, index })}
+            onClick={() => openHit(hit)}
           >
             <Avatar name={hit.senderName} agent={hit.senderType === "agent"} />
             {/* Spans throughout: a button may only hold phrasing content, and
@@ -2868,12 +3217,10 @@ function AgentsModal(props: {
   locale: Locale;
   currentUser: User;
   agents: Agent[];
-  channel: Channel | null;
-  channelAgents: RosterAgent[];
   onClose: () => void;
   onChanged: () => Promise<void>;
 }) {
-  const { locale, currentUser, agents, channel, channelAgents, onClose, onChanged } = props;
+  const { locale, currentUser, agents, onClose, onChanged } = props;
   const t = copy[locale];
   // null = closed, "new" = connect form, Agent = editing that agent.
   const [formFor, setFormFor] = useState<Agent | "new" | null>(null);
@@ -2882,7 +3229,11 @@ function AgentsModal(props: {
   const [form, setForm] = useState({ name: "", handle: "", description: "", rpcUrl: "", bearerToken: "", historyCount: 20 });
   const [discovering, setDiscovering] = useState(false);
   const [card, setCard] = useState<DiscoveredCard | null>(null);
-  const channelAgentIds = new Set(channelAgents.map((agent) => agent.id));
+  const [filter, setFilter] = useState("");
+  // Disabling pulls an agent out of every channel for everyone and cancels
+  // whatever it is running, so it asks first — in place, since this list is
+  // already inside a modal.
+  const [confirmDisable, setConfirmDisable] = useState<string | null>(null);
   const editing = formFor && formFor !== "new" ? formFor : null;
   const closeForm = () => {
     setFormFor(null);
@@ -2974,8 +3325,81 @@ function AgentsModal(props: {
   const credentialsChanged = Boolean(
     editing && (form.bearerToken || (card ? card.rpcUrl : form.rpcUrl) !== editing.rpcUrl),
   );
+  const needle = filter.trim().toLowerCase();
+  const matched = needle
+    ? agents.filter((agent) =>
+      `${agent.name} ${agent.handle} ${agent.description}`.toLowerCase().includes(needle))
+    : agents;
+  const disableAgent = async (agent: Agent) => {
+    setConfirmDisable(null);
+    setError("");
+    try {
+      await api(`/api/agents/${encodeURIComponent(agent.id)}`, { method: "DELETE" });
+      await onChanged();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  };
+  const group = (title: string, list: Agent[]) => list.length > 0 && (
+    <div className="agent-list" key={title}>
+      <h3 className="agent-group-heading">{title}</h3>
+      {list.map((agent) => {
+        const mine = agent.ownerUserId === currentUser.id;
+        return (
+          <article className={`agent-card ${!agent.enabled ? "disabled" : ""}`} key={agent.id}>
+            <Avatar name={agent.name} agent />
+            <div className="agent-card-main">
+              <header><strong>{agent.name}</strong><span>@{agent.handle}</span>{!agent.enabled && <em>{t.disabled}</em>}</header>
+              <p>{agent.description || t.agentNoDescription}</p>
+              <small>
+                {t.ownedBy} {agent.ownerUsername || (mine ? currentUser.username : t.workspaceMember)}
+                {" · "}{t.historyLine(agent.historyCount)}
+              </small>
+            </div>
+            <div className="agent-card-actions">
+              {mine && (
+                <button
+                  className="icon-button"
+                  title={t.editAgent}
+                  aria-label={t.editAgent}
+                  onClick={() => openEdit(agent)}
+                ><Pencil size={16} /></button>
+              )}
+              {(mine || currentUser.role === "owner") && agent.enabled && (
+                <button
+                  className="icon-button danger-text"
+                  title={t.remove}
+                  aria-label={t.remove}
+                  aria-expanded={confirmDisable === agent.id}
+                  onClick={() => setConfirmDisable(confirmDisable === agent.id ? null : agent.id)}
+                ><X size={16} /></button>
+              )}
+            </div>
+            {/* Spans the card rather than sitting in the text column: the
+                consequence is about the whole agent, and the sentence needs
+                the width to be read before the button next to it is pressed. */}
+            {confirmDisable === agent.id && (
+              <div className="confirm-strip">
+                <span>{t.disableConfirm(agent.handle)}</span>
+                <button type="button" className="secondary-button" onClick={() => setConfirmDisable(null)}>
+                  {t.cancel}
+                </button>
+                <button
+                  type="button"
+                  className="secondary-button danger-text"
+                  onClick={() => void disableAgent(agent)}
+                >
+                  {t.disableConfirmAction}
+                </button>
+              </div>
+            )}
+          </article>
+        );
+      })}
+    </div>
+  );
   return (
-    <ModalShell title={t.agents} subtitle={locale === "zh" ? "连接你的 A2A Agent，并决定它可以加入哪些频道。" : "Connect your A2A agents and choose the channels where they can work."} onClose={onClose} wide>
+    <ModalShell locale={locale} title={t.agents} subtitle={t.agentsSubtitle} onClose={onClose} wide>
       <div className="agent-modal-toolbar">
         <div className="security-note"><ShieldCheck size={16} /><span>{locale === "zh" ? "Token 加密保存且永不回显" : "Tokens are encrypted and never shown again"}</span></div>
         <button className="primary-button" onClick={openCreate}><Plus size={16} /> {t.addAgent}</button>
@@ -3041,68 +3465,26 @@ function AgentsModal(props: {
           </div>
         </form>
       )}
-      <div className="agent-list">
-        {agents.length === 0 && <div className="empty-agents"><Bot size={28} /><p>{locale === "zh" ? "还没有连接 Agent。" : "No agents connected yet."}</p></div>}
-        {agents.map((agent) => {
-          const mine = agent.ownerUserId === currentUser.id;
-          const inChannel = channel ? channelAgentIds.has(agent.id) : false;
-          return (
-            <article className={`agent-card ${!agent.enabled ? "disabled" : ""}`} key={agent.id}>
-              <Avatar name={agent.name} agent />
-              <div className="agent-card-main">
-                <header><strong>{agent.name}</strong><span>@{agent.handle}</span>{!agent.enabled && <em>{t.disabled}</em>}</header>
-                <p>{agent.description || "A connected A2A teammate."}</p>
-                <small>{t.ownedBy} {agent.ownerUsername || (mine ? currentUser.username : "workspace member")} · {agent.historyCount} history messages</small>
-              </div>
-              <div className="agent-card-actions">
-                {channel && mine && agent.enabled && (
-                  <button
-                    className={inChannel ? "secondary-button danger-text" : "secondary-button"}
-                    onClick={async () => {
-                      await api(`/api/channels/${encodeURIComponent(channel.id)}/agents/${encodeURIComponent(agent.id)}`, {
-                        method: inChannel ? "DELETE" : "POST",
-                      });
-                      await onChanged();
-                    }}
-                  >
-                    {inChannel ? t.removeFromChannel : t.addToChannel}
-                  </button>
-                )}
-                {channel && mine && inChannel && (
-                  <button
-                    className="icon-button"
-                    title={t.resetMemory}
-                    onClick={async () => {
-                      await api(`/api/channels/${encodeURIComponent(channel.id)}/agents/${encodeURIComponent(agent.id)}/reset`, {
-                        method: "POST",
-                        body: JSON.stringify({}),
-                      });
-                    }}
-                  ><RefreshCw size={16} /></button>
-                )}
-                {mine && (
-                  <button
-                    className="icon-button"
-                    title={t.editAgent}
-                    aria-label={t.editAgent}
-                    onClick={() => openEdit(agent)}
-                  ><Pencil size={16} /></button>
-                )}
-                {(mine || currentUser.role === "owner") && agent.enabled && (
-                  <button
-                    className="icon-button danger-text"
-                    title={t.remove}
-                    onClick={async () => {
-                      await api(`/api/agents/${encodeURIComponent(agent.id)}`, { method: "DELETE" });
-                      await onChanged();
-                    }}
-                  ><X size={16} /></button>
-                )}
-              </div>
-            </article>
-          );
-        })}
-      </div>
+      {agents.length > 6 && (
+        <label className="channel-filter agent-filter">
+          <Search size={14} />
+          <input
+            value={filter}
+            onChange={(event) => setFilter(event.target.value)}
+            placeholder={t.filterAgents}
+          />
+        </label>
+      )}
+      {agents.length === 0 && (
+        <div className="empty-agents"><Bot size={28} /><p>{t.emptyAgents}</p></div>
+      )}
+      {agents.length > 0 && matched.length === 0 && (
+        <p className="search-placeholder">{t.noAgentMatch}</p>
+      )}
+      {/* Yours first and separately: they are the only ones you can act on, and
+          a flat workspace list stops being readable somewhere around a dozen. */}
+      {group(t.myAgents, matched.filter((agent) => agent.ownerUserId === currentUser.id))}
+      {group(t.otherMembersAgents, matched.filter((agent) => agent.ownerUserId !== currentUser.id))}
     </ModalShell>
   );
 }
@@ -3147,7 +3529,7 @@ function AccountModal(props: {
     setNotify(true);
   };
   return (
-    <ModalShell title={t.settings} subtitle={`@${user.username} · ${user.role}`} onClose={onClose}>
+    <ModalShell locale={locale} title={t.settings} subtitle={`@${user.username} · ${user.role}`} onClose={onClose}>
       <label className="check-row">
         <input
           type="checkbox"
