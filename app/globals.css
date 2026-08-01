@@ -1140,10 +1140,14 @@ button:disabled {
   background: hsl(var(--avatar-h) 44% 90%);
 }
 
+/* Agents get the per-name hue people already read on user avatars — eight
+   identical lavender bots are indistinguishable at a glance. Users have
+   initials to tell them apart, agents all share the bot glyph, so their hue
+   band opens to the full wheel (at the same muted tint) instead of the
+   compressed mauve range. The glyph plus the ring is what says "agent". */
 .avatar.agent-avatar {
-  color: var(--primary);
-  background: var(--canvas-lavender);
-  box-shadow: inset 0 0 0 1px var(--lavender-line);
+  --avatar-h: calc(var(--avatar-hue, 292) * 1deg);
+  box-shadow: inset 0 0 0 1px hsl(var(--avatar-h) 40% 78%);
 }
 
 .profile-button .avatar,
@@ -1161,6 +1165,10 @@ button:disabled {
   min-width: 0;
   min-height: 0;
   grid-template-rows: var(--bar-h) auto minmax(0, 1fr) auto;
+  /* Same constraint as .thread-pane: without it the implicit column takes the
+     channel header's min-content width and the whole column paints under the
+     thread pane (this pane is position:relative, so it wins the z-order). */
+  grid-template-columns: minmax(0, 1fr);
   background: var(--canvas);
 }
 
@@ -1983,6 +1991,10 @@ button:disabled {
   min-width: 0;
   min-height: 0;
   grid-template-rows: var(--bar-h) minmax(0, 1fr) auto;
+  /* Without this the single implicit column takes the widest child's
+     min-content — the composer's nowrap key hint — and every row overflows
+     the pane, clipping thread text at the viewport edge. */
+  grid-template-columns: minmax(0, 1fr);
   border-left: 1px solid var(--hairline);
   background: var(--canvas);
 }
@@ -2031,6 +2043,13 @@ button:disabled {
 
 .thread-pane > .composer {
   margin: 4px var(--s-md) var(--s-md);
+}
+
+/* The pane runs 300–440px; neither nowrap hint fits, and the send button's
+   accessible name still carries the shortcut. */
+.thread-pane .composer-keyhint,
+.thread-pane .composer-mention-hint {
+  display: none;
 }
 
 .thread-pane .message-hover-actions {
@@ -2198,6 +2217,58 @@ button:disabled {
   color: var(--primary);
 }
 
+/* Connect flow — replaces the agent list rather than sitting above it */
+
+.connect-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: var(--s-md);
+  padding: 4px 8px 4px 4px;
+  color: var(--ink-mute);
+  border-radius: var(--r-sm);
+  background: transparent;
+  font: var(--text-caption);
+  font-size: 12px;
+}
+
+.connect-back:hover {
+  color: var(--ink);
+  background: var(--canvas-lavender);
+}
+
+.connect-divider {
+  display: flex;
+  align-items: center;
+  gap: var(--s-sm);
+  margin: var(--s-md) 0;
+  color: var(--ink-mute);
+  font: var(--text-micro-cap);
+  letter-spacing: var(--track-micro-cap);
+  text-transform: uppercase;
+}
+
+.connect-divider::before,
+.connect-divider::after {
+  height: 1px;
+  flex: 1;
+  content: "";
+  background: var(--hairline);
+}
+
+.link-button {
+  justify-self: start;
+  padding: 2px 0;
+  color: var(--link-blue);
+  background: transparent;
+  font-size: 12px;
+}
+
+.link-button:hover {
+  color: var(--link-hover);
+  text-decoration: underline;
+}
+
 /* Manyfold one-click connect */
 
 .manyfold-connect {
@@ -2288,6 +2359,20 @@ button:disabled {
 
 .agent-form .span-two {
   grid-column: 1 / -1;
+}
+
+/* The form can outgrow the modal; Cancel / Save stay reachable while the
+   fields scroll. Negative margins let the bar bleed to the form's edges so
+   content slides under a solid surface instead of a floating strip. */
+.agent-form .form-actions {
+  position: sticky;
+  z-index: 2;
+  bottom: calc(var(--pad-modal) * -1);
+  margin: 0 calc(var(--pad-card) * -1) calc(var(--pad-card) * -1);
+  padding: var(--s-sm) var(--pad-card);
+  border-top: 1px solid var(--lavender-line);
+  border-radius: 0 0 var(--r-md) var(--r-md);
+  background: var(--canvas-lavender);
 }
 
 .history-note {
@@ -3345,7 +3430,9 @@ button:disabled {
   margin-top: var(--s-md);
 }
 
-.agent-add-row > span {
+/* The avatar is also a direct-child span; without the guard it takes the
+   flex share and stretches into a full-width pill. */
+.agent-add-row > span:not(.avatar) {
   flex: 1;
 }
 

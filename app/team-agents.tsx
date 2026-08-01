@@ -2,6 +2,7 @@
 
 import {
   Activity,
+  ArrowLeft,
   AtSign,
   Bot,
   Check,
@@ -228,6 +229,7 @@ const copy = {
     agentsSubtitle: "连接和管理你的 A2A Agent。把它加进某个频道，在那个频道的「频道 Agent」里操作。",
     workspaceMember: "工作区成员",
     historyLine: (n: number) => `发送 ${n} 条历史消息`,
+    channelsLine: (n: number) => (n === 0 ? "尚未加入频道" : `${n} 个频道`),
     agentLeft: (name: string) => `${name} 已移出本频道`,
     memoryResetDone: "已重置这个频道的 A2A 记忆",
     disableConfirm: (handle: string) =>
@@ -253,6 +255,9 @@ const copy = {
     sendRun: (n: number) => `发送并运行 ${n} 个 Agent`,
     noMessages: "这里还很安静。发出第一条消息，或 @ 一个 Agent 开始协作。",
     addAgent: "连接新 Agent",
+    backToAgents: "返回 Agent 列表",
+    connectOr: "或粘贴地址手动连接",
+    manualReveal: "没有 Agent Card？手动填写全部字段",
     connectManyfold: "从 Manyfold 连接",
     connectManyfoldHint: "在 Manyfold 上勾选账号下的 Agent，地址和 token 自动带回，无需复制粘贴。",
     connectOpening: "正在打开授权页…",
@@ -424,6 +429,7 @@ const copy = {
     agentsSubtitle: "Connect and manage your A2A agents. Adding one to a channel happens in that channel’s agent panel.",
     workspaceMember: "a workspace member",
     historyLine: (n: number) => `${n} history messages sent`,
+    channelsLine: (n: number) => (n === 0 ? "Not in any channel yet" : `${n} channel${n === 1 ? "" : "s"}`),
     agentLeft: (name: string) => `${name} left this channel`,
     memoryResetDone: "A2A memory reset for this channel",
     disableConfirm: (handle: string) =>
@@ -449,6 +455,9 @@ const copy = {
     sendRun: (n: number) => `Send & run ${n} agent${n === 1 ? "" : "s"}`,
     noMessages: "It’s quiet here. Send the first message or @mention an agent to get moving.",
     addAgent: "Connect a new agent",
+    backToAgents: "Back to agents",
+    connectOr: "or connect by pasting a URL",
+    manualReveal: "No agent card? Fill in every field manually",
     connectManyfold: "Connect from Manyfold",
     connectManyfoldHint: "Pick agents from your Manyfold account — endpoint and token come back automatically, no copy-paste.",
     connectOpening: "Opening the authorization page…",
@@ -596,6 +605,22 @@ function avatarHue(value: string): number {
 
 function initials(value: string): string {
   return value.trim().split(/\s+/).map((part) => part[0] ?? "").join("").slice(0, 2).toUpperCase();
+}
+
+/**
+ * Card-provided descriptions often lead with the agent's own name
+ * ("foo — a Manyfold-hosted agent…"). Every surface that shows the
+ * description already shows the name next to it, so the repeat is dropped —
+ * but only behind an explicit separator, where cutting cannot change meaning.
+ */
+function agentBlurb(name: string, description: string): string {
+  const text = description.trim();
+  if (!text.toLowerCase().startsWith(name.toLowerCase())) return text;
+  const separator = text.slice(name.length).match(/^\s*[—–:·-]\s*/);
+  if (!separator) return text;
+  const rest = text.slice(name.length + separator[0].length);
+  if (!rest) return "";
+  return rest[0].toUpperCase() + rest.slice(1);
 }
 
 function upsertMessage(list: Message[], message: Message): Message[] {
@@ -2287,7 +2312,7 @@ function Composer(props: {
         .filter((agent) => agent.handle.includes(mentionQuery))
         // The description rides along: this menu is where an agent is actually
         // chosen, and a bare handle is not enough to choose between three of them.
-        .map((agent) => ({ id: agent.id, label: agent.name, handle: agent.handle, description: agent.description, kind: "agent" as const, agent: null })),
+        .map((agent) => ({ id: agent.id, label: agent.name, handle: agent.handle, description: agentBlurb(agent.name, agent.description), kind: "agent" as const, agent: null })),
       ...rosterUsers
         .filter((user) => user.username.toLowerCase().includes(mentionQuery))
         .map((user) => ({ id: user.id, label: user.username, handle: user.username, description: "", kind: "user" as const, agent: null })),
@@ -2299,7 +2324,7 @@ function Composer(props: {
       ...inChannel,
       ...ownAgents
         .filter((agent) => agent.handle.includes(mentionQuery))
-        .map((agent) => ({ id: agent.id, label: agent.name, handle: agent.handle, description: agent.description, kind: "add-agent" as const, agent }))
+        .map((agent) => ({ id: agent.id, label: agent.name, handle: agent.handle, description: agentBlurb(agent.name, agent.description), kind: "add-agent" as const, agent }))
         .slice(0, 3),
     ];
   }, [mentionQuery, rosterAgents, rosterUsers, ownAgents]);
@@ -2770,7 +2795,7 @@ function ChannelAgentsModal(props: {
               <Avatar name={agent.name} agent />
               <div className="agent-card-main">
                 <header><strong>{agent.name}</strong><span>@{agent.handle}</span></header>
-                <p>{agent.description || t.agentNoDescription}</p>
+                <p>{agentBlurb(agent.name, agent.description) || t.agentNoDescription}</p>
                 <small>{t.ownedBy} {agent.ownerUsername}</small>
               </div>
               <div className="agent-card-actions">
@@ -2824,7 +2849,7 @@ function ChannelAgentsModal(props: {
                 <Avatar name={agent.name} agent />
                 <span>
                   <strong>{agent.name}</strong>
-                  <small>@{agent.handle}{agent.description ? ` · ${agent.description}` : ""}</small>
+                  <small>@{agent.handle}{agentBlurb(agent.name, agent.description) ? ` · ${agentBlurb(agent.name, agent.description)}` : ""}</small>
                 </span>
                 <button
                   className="secondary-button"
@@ -3229,16 +3254,21 @@ function AgentsModal(props: {
   const [form, setForm] = useState({ name: "", handle: "", description: "", rpcUrl: "", bearerToken: "", historyCount: 20 });
   const [discovering, setDiscovering] = useState(false);
   const [card, setCard] = useState<DiscoveredCard | null>(null);
+  // A fresh connect starts as URL + token only; the identity fields appear
+  // once discovery has filled them, or on request when there is no card.
+  const [manualDetails, setManualDetails] = useState(false);
   const [filter, setFilter] = useState("");
   // Disabling pulls an agent out of every channel for everyone and cancels
   // whatever it is running, so it asks first — in place, since this list is
   // already inside a modal.
   const [confirmDisable, setConfirmDisable] = useState<string | null>(null);
   const editing = formFor && formFor !== "new" ? formFor : null;
+  const detailsVisible = Boolean(editing || card || manualDetails);
   const closeForm = () => {
     setFormFor(null);
     setForm({ name: "", handle: "", description: "", rpcUrl: "", bearerToken: "", historyCount: 20 });
     setCard(null);
+    setManualDetails(false);
     setError("");
   };
   const openCreate = () => {
@@ -3350,9 +3380,10 @@ function AgentsModal(props: {
             <Avatar name={agent.name} agent />
             <div className="agent-card-main">
               <header><strong>{agent.name}</strong><span>@{agent.handle}</span>{!agent.enabled && <em>{t.disabled}</em>}</header>
-              <p>{agent.description || t.agentNoDescription}</p>
+              <p>{agentBlurb(agent.name, agent.description) || t.agentNoDescription}</p>
               <small>
                 {t.ownedBy} {agent.ownerUsername || (mine ? currentUser.username : t.workspaceMember)}
+                {" · "}{t.channelsLine(agent.channelCount)}
                 {" · "}{t.historyLine(agent.historyCount)}
               </small>
             </div>
@@ -3400,91 +3431,121 @@ function AgentsModal(props: {
   );
   return (
     <ModalShell locale={locale} title={t.agents} subtitle={t.agentsSubtitle} onClose={onClose} wide>
-      <div className="agent-modal-toolbar">
-        <div className="security-note"><ShieldCheck size={16} /><span>{locale === "zh" ? "Token 加密保存且永不回显" : "Tokens are encrypted and never shown again"}</span></div>
-        <button className="primary-button" onClick={openCreate}><Plus size={16} /> {t.addAgent}</button>
-      </div>
-      <ManyfoldConnectPanel locale={locale} onConnected={onChanged} />
-      {formFor && (
-        <form className="agent-form" onSubmit={submit}>
-          <div className="form-grid">
-            <label className="span-two">
-              <span>{t.cardUrl}</span>
-              <div className="input-with-action">
-                <input
-                  type="url"
-                  value={form.rpcUrl}
-                  onChange={(event) => setForm({ ...form, rpcUrl: event.target.value })}
-                  // Auto-discovery only on first connect; during an edit a stray
-                  // blur must not surface a card error on an unrelated rename.
-                  onBlur={() => { if (!editing && !card && form.rpcUrl.trim()) void discover(); }}
-                  placeholder="https://api.manyfold.ai/api/a2a/agents/agt_…/rpc"
-                  required
-                />
-                <button type="button" className="secondary-button" onClick={() => void discover()} disabled={discovering || !form.rpcUrl.trim()}>
-                  {discovering ? <><RefreshCw className="spin" size={14} /> {t.discovering}</> : <><Download size={14} /> {t.discover}</>}
-                </button>
-              </div>
-            </label>
-            <label className="span-two">
-              <span>{t.token}</span>
+      {/* One surface at a time: the list, or the connect/edit flow in its
+          place. Two competing "connect" entry points confused the first-run
+          path, so the list keeps a single button and the flow offers both
+          routes once you are in it. */}
+      {!formFor && (
+        <>
+          <div className="agent-modal-toolbar">
+            <div className="security-note"><ShieldCheck size={16} /><span>{locale === "zh" ? "Token 加密保存且永不回显" : "Tokens are encrypted and never shown again"}</span></div>
+            <button className="primary-button" onClick={openCreate}><Plus size={16} /> {t.addAgent}</button>
+          </div>
+          {agents.length > 6 && (
+            <label className="channel-filter agent-filter">
+              <Search size={14} />
               <input
-                type="password"
-                value={form.bearerToken}
-                onChange={(event) => setForm({ ...form, bearerToken: event.target.value })}
-                autoComplete="off"
-                placeholder={editing ? t.tokenKeep : undefined}
-                required={!editing}
+                value={filter}
+                onChange={(event) => setFilter(event.target.value)}
+                placeholder={t.filterAgents}
               />
             </label>
-            {card && (
-              <div className="span-two card-preview">
-                <ShieldCheck size={14} />
-                <span><strong>{t.discoveredFrom}</strong> · A2A {card.protocolVersion} · {card.streaming ? t.streamingOn : t.streamingOff}</span>
-                {card.skills.length > 0 && <small>{card.skills.join(" · ")}</small>}
-              </div>
+          )}
+          {agents.length === 0 && (
+            <div className="empty-agents"><Bot size={28} /><p>{t.emptyAgents}</p></div>
+          )}
+          {agents.length > 0 && matched.length === 0 && (
+            <p className="search-placeholder">{t.noAgentMatch}</p>
+          )}
+          {/* Yours first and separately: they are the only ones you can act on, and
+              a flat workspace list stops being readable somewhere around a dozen. */}
+          {group(t.myAgents, matched.filter((agent) => agent.ownerUserId === currentUser.id))}
+          {group(t.otherMembersAgents, matched.filter((agent) => agent.ownerUserId !== currentUser.id))}
+        </>
+      )}
+      {formFor && (
+        <>
+          <button type="button" className="connect-back" onClick={closeForm}>
+            <ArrowLeft size={14} /> {t.backToAgents}
+          </button>
+          {!editing && (
+            <>
+              <ManyfoldConnectPanel locale={locale} onConnected={onChanged} />
+              <div className="connect-divider"><span>{t.connectOr}</span></div>
+            </>
+          )}
+          <form className="agent-form" onSubmit={submit}>
+            <div className="form-grid">
+              <label className="span-two">
+                <span>{t.cardUrl}</span>
+                <div className="input-with-action">
+                  <input
+                    type="url"
+                    value={form.rpcUrl}
+                    onChange={(event) => setForm({ ...form, rpcUrl: event.target.value })}
+                    // Auto-discovery only on first connect; during an edit a stray
+                    // blur must not surface a card error on an unrelated rename.
+                    onBlur={() => { if (!editing && !card && form.rpcUrl.trim()) void discover(); }}
+                    placeholder="https://api.manyfold.ai/api/a2a/agents/agt_…/rpc"
+                    required
+                  />
+                  <button type="button" className="secondary-button" onClick={() => void discover()} disabled={discovering || !form.rpcUrl.trim()}>
+                    {discovering ? <><RefreshCw className="spin" size={14} /> {t.discovering}</> : <><Download size={14} /> {t.discover}</>}
+                  </button>
+                </div>
+              </label>
+              <label className="span-two">
+                <span>{t.token}</span>
+                <input
+                  type="password"
+                  value={form.bearerToken}
+                  onChange={(event) => setForm({ ...form, bearerToken: event.target.value })}
+                  autoComplete="off"
+                  placeholder={editing ? t.tokenKeep : undefined}
+                  required={!editing}
+                />
+              </label>
+              {card && (
+                <div className="span-two card-preview">
+                  <ShieldCheck size={14} />
+                  <span><strong>{t.discoveredFrom}</strong> · A2A {card.protocolVersion} · {card.streaming ? t.streamingOn : t.streamingOff}</span>
+                  {card.skills.length > 0 && <small>{card.skills.join(" · ")}</small>}
+                </div>
+              )}
+              {/* URL and token are the whole first step; the identity fields
+                  join in prefilled once the card has been read, or on request
+                  when the server has none to read. */}
+              {detailsVisible && (
+                <>
+                  <label><span>{t.agentName}</span><input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required /></label>
+                  <label><span>{t.handle}</span><div className="input-prefix"><span>@</span><input value={form.handle} onChange={(event) => setForm({ ...form, handle: event.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, "") })} required /></div></label>
+                  <label className="span-two"><span>{t.description}</span><input value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} /></label>
+                  <label><span>{t.history}</span><input type="number" min={0} max={100} value={form.historyCount} onChange={(event) => setForm({ ...form, historyCount: Number(event.target.value) })} /></label>
+                </>
+              )}
+            </div>
+            {!detailsVisible && (
+              <button type="button" className="link-button" onClick={() => setManualDetails(true)}>
+                {t.manualReveal}
+              </button>
             )}
-            <label><span>{t.agentName}</span><input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required /></label>
-            <label><span>{t.handle}</span><div className="input-prefix"><span>@</span><input value={form.handle} onChange={(event) => setForm({ ...form, handle: event.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, "") })} required /></div></label>
-            <label className="span-two"><span>{t.description}</span><input value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} /></label>
-            <label><span>{t.history}</span><input type="number" min={0} max={100} value={form.historyCount} onChange={(event) => setForm({ ...form, historyCount: Number(event.target.value) })} /></label>
-          </div>
-          <p className="history-note"><Download size={14} /> {t.discoverHint}</p>
-          <p className="history-note"><MessageCircle size={14} /> {t.historyNote}</p>
-          <p className="history-note"><Globe2 size={14} /> {t.connectionTip}</p>
-          {credentialsChanged && <p className="history-note"><RefreshCw size={14} /> {t.memoryResetNote}</p>}
-          {editing && !editing.enabled && <p className="history-note"><Zap size={14} /> {t.reenableNote}</p>}
-          {error && <div className="form-error">{error}</div>}
-          <div className="form-actions">
-            <button type="button" className="secondary-button" onClick={closeForm}>{t.cancel}</button>
-            <button className="primary-button" disabled={busy}>
-              {busy
-                ? <><RefreshCw className="spin" size={16} /> {t.testing}</>
-                : <><Zap size={16} /> {editing ? t.saveChanges : t.saveTest}</>}
-            </button>
-          </div>
-        </form>
+            {!detailsVisible && <p className="history-note"><Download size={14} /> {t.discoverHint}</p>}
+            {detailsVisible && <p className="history-note"><MessageCircle size={14} /> {t.historyNote}</p>}
+            <p className="history-note"><Globe2 size={14} /> {t.connectionTip}</p>
+            {credentialsChanged && <p className="history-note"><RefreshCw size={14} /> {t.memoryResetNote}</p>}
+            {editing && !editing.enabled && <p className="history-note"><Zap size={14} /> {t.reenableNote}</p>}
+            {error && <div className="form-error">{error}</div>}
+            <div className="form-actions">
+              <button type="button" className="secondary-button" onClick={closeForm}>{t.cancel}</button>
+              <button className="primary-button" disabled={busy || !detailsVisible}>
+                {busy
+                  ? <><RefreshCw className="spin" size={16} /> {t.testing}</>
+                  : <><Zap size={16} /> {editing ? t.saveChanges : t.saveTest}</>}
+              </button>
+            </div>
+          </form>
+        </>
       )}
-      {agents.length > 6 && (
-        <label className="channel-filter agent-filter">
-          <Search size={14} />
-          <input
-            value={filter}
-            onChange={(event) => setFilter(event.target.value)}
-            placeholder={t.filterAgents}
-          />
-        </label>
-      )}
-      {agents.length === 0 && (
-        <div className="empty-agents"><Bot size={28} /><p>{t.emptyAgents}</p></div>
-      )}
-      {agents.length > 0 && matched.length === 0 && (
-        <p className="search-placeholder">{t.noAgentMatch}</p>
-      )}
-      {/* Yours first and separately: they are the only ones you can act on, and
-          a flat workspace list stops being readable somewhere around a dozen. */}
-      {group(t.myAgents, matched.filter((agent) => agent.ownerUserId === currentUser.id))}
-      {group(t.otherMembersAgents, matched.filter((agent) => agent.ownerUserId !== currentUser.id))}
     </ModalShell>
   );
 }
