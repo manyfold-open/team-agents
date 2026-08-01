@@ -55,10 +55,31 @@ type Channel = {
   unreadCount: number;
   /** Unread messages that name you specifically — a stronger signal than unread. */
   mentionCount: number;
+  /** Newest unread message naming you, and who wrote it. Drives the mention
+   *  toast and lets it land on the message rather than the channel. */
+  latestMentionId: number | null;
+  latestMentionFrom: string | null;
   activeRunCount: number;
   latestMessageId: number;
   memberCount: number;
   agentCount: number;
+};
+/** A message to land on, anywhere in the workspace. */
+type FocusTarget = {
+  channelId: string;
+  messageId: number;
+  threadRootId: number | null;
+};
+type SearchHit = {
+  messageId: number;
+  channelId: string;
+  channelName: string;
+  threadRootId: number | null;
+  senderType: "user" | "agent" | "system";
+  senderName: string;
+  senderHandle: string | null;
+  excerpt: string;
+  createdAt: string;
 };
 type RunStatus = "queued" | "running" | "input-required" | "completed" | "failed" | "canceled";
 type Run = {
@@ -152,9 +173,10 @@ type Toast = {
   tone: "done" | "failed" | "attention";
   title: string;
   body: string;
-  channelId?: string;
+  /** Where clicking the toast lands — the message it is about, not its channel. */
+  focus?: FocusTarget;
 };
-type Modal = "channel" | "people" | "agents" | "account" | null;
+type Modal = "channel" | "people" | "agents" | "account" | "search" | null;
 /** Composer seed; `nonce` makes repeat inserts of the same handle distinct. */
 type Prefill = { text: string; nonce: number };
 
@@ -303,6 +325,22 @@ const copy = {
     emptyConnect: "连接第一个 Agent",
     emptyAdd: "把 Agent 加进这个频道",
     mentionsTitle: (n: number) => `${n} 条提到你`,
+    search: "搜索消息",
+    searchPlaceholder: "搜索所有频道的消息…",
+    searchStart: "输入关键词，搜索你能看到的所有频道。",
+    searchEmpty: "没有匹配的消息。",
+    searching: "正在搜索…",
+    searchMore: "加载更多结果",
+    searchScopeAll: "所有频道",
+    searchScopeChannel: (channel: string) => `仅 #${channel}`,
+    searchOnlyAgents: "只看 Agent 回答",
+    searchScanNote: "少于 3 个字的关键词会逐条扫描，可能稍慢。",
+    searchHint: "⌘K / Ctrl+K 随时打开",
+    inThread: "讨论串",
+    newMessagesDivider: "以下是新消息",
+    loadNewer: "加载更新的消息",
+    loadingNewer: "正在加载更新的消息…",
+    toastMention: (from: string) => `${from} 提到了你`,
   },
   en: {
     welcome: "Welcome back to the work",
@@ -448,6 +486,22 @@ const copy = {
     emptyConnect: "Connect your first agent",
     emptyAdd: "Bring an agent into this channel",
     mentionsTitle: (n: number) => `${n} mentioning you`,
+    search: "Search messages",
+    searchPlaceholder: "Search messages across channels…",
+    searchStart: "Type to search every channel you can read.",
+    searchEmpty: "No messages match that.",
+    searching: "Searching…",
+    searchMore: "Load more results",
+    searchScopeAll: "All channels",
+    searchScopeChannel: (channel: string) => `#${channel} only`,
+    searchOnlyAgents: "Agent answers only",
+    searchScanNote: "Queries under 3 characters scan message by message and may be slower.",
+    searchHint: "⌘K / Ctrl+K anywhere",
+    inThread: "thread",
+    newMessagesDivider: "New messages",
+    loadNewer: "Load newer messages",
+    loadingNewer: "Loading newer messages…",
+    toastMention: (from: string) => `${from} mentioned you`,
   },
 } as const;
 
@@ -521,6 +575,16 @@ function pinToBottom(node: HTMLElement): void {
 }
 
 /**
+ * Scrolls a pane so one message sits in the middle of it. Measured against the
+ * pane rather than handed to `scrollIntoView`: neither transcript is the
+ * scrolling root, and scrollIntoView would drag the whole page with it.
+ */
+function centreOn(pane: HTMLElement, target: HTMLElement): void {
+  const offset = target.getBoundingClientRect().top - pane.getBoundingClientRect().top;
+  pane.scrollTop += offset - Math.max(0, (pane.clientHeight - target.clientHeight) / 2);
+}
+
+/**
  * Live wall-clock for a run in flight. An agent turn can legitimately last
  * minutes, and a spinner with no number behind it is indistinguishable from a
  * stuck one.
@@ -552,6 +616,17 @@ function desktopNotificationsOn(): boolean {
     && window.localStorage.getItem(NOTIFY_KEY) === "on"
     && typeof Notification !== "undefined"
     && Notification.permission === "granted";
+}
+
+/**
+ * ⌘ on Apple keyboards, Ctrl everywhere else. Read after mount — the shell
+ * renders the loading screen until bootstrap resolves, so there is no server
+ * pass for this to disagree with.
+ */
+function shortcutPrefix(): string {
+  return typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/i.test(navigator.userAgent)
+    ? "⌘"
+    : "Ctrl+";
 }
 
 /** Only fires for a tab the reader is not looking at — otherwise the toast is it. */
@@ -594,6 +669,33 @@ export function TeamAgentsApp() {
   const [missedCount, setMissedCount] = useState(0);
   const [hasOlder, setHasOlder] = useState(false);
   const [olderPending, setOlderPending] = useState(false);
+  // True while the transcript is parked mid-history after a jump: the tail is
+  // no longer on screen, so live messages must not be appended into the gap.
+  const [hasNewer, setHasNewer] = useState(false);
+  // Mirrored for the socket handler, which must not re-subscribe just to learn
+  // that the transcript moved off the tail.
+  const hasNewerRef = useRef(false);
+  const [newerPending, setNewerPending] = useState(false);
+  // Where this reader had read up to when the channel opened. Fixed for the
+  // visit, so the divider stays where it was rather than sliding down as the
+  // read cursor advances underneath it.
+  const [unreadFrom, setUnreadFrom] = useState(0);
+  // Carries a nonce as well as the id: landing twice on the same message is a
+  // real request, and a bare id would look unchanged the second time.
+  // `anchorId` is what the transcript centres on — the thread root for a reply.
+  const [highlight, setHighlight] = useState<
+    { id: number; anchorId: number; nonce: number } | null
+  >(null);
+  const highlightSeq = useRef(0);
+  const scrolledMain = useRef(0);
+  const scrolledThread = useRef(0);
+  const threadScroll = useRef<HTMLDivElement>(null);
+  // The message to land on, consumed by the load it triggers. A ref rather than
+  // state so applying it cannot itself re-run the channel-load effect.
+  const focusTarget = useRef<FocusTarget | null>(null);
+  const [focusNonce, setFocusNonce] = useState(0);
+  const appliedFocus = useRef(0);
+  const pendingThreadFocus = useRef<FocusTarget | null>(null);
   const [prefill, setPrefill] = useState<Prefill | null>(null);
   const [threadPrefill, setThreadPrefill] = useState<Prefill | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
@@ -604,6 +706,10 @@ export function TeamAgentsApp() {
   // this that tail would re-announce the same run on every poll.
   const announcedRuns = useRef(new Set<string>());
   const runsPrimed = useRef(false);
+  // Newest announced mention per channel. Bootstrap reports the newest unread
+  // mention on every poll, so only a rising id is actually news.
+  const mentionSnapshot = useRef(new Map<string, number>());
+  const mentionsPrimed = useRef(false);
 
   const pushToast = useCallback((toast: Omit<Toast, "id">) => {
     toastSeq.current += 1;
@@ -660,36 +766,68 @@ export function TeamAgentsApp() {
 
   const selectedChannel = boot?.channels?.find((channel) => channel.id === selectedChannelId) ?? null;
 
-  const loadChannel = useCallback(async (channelId: string) => {
+  const loadChannel = useCallback(async (channelId: string, focus?: FocusTarget | null) => {
     if (!channelId || !boot?.authenticated) return;
     setLoadingChannel(true);
     setError("");
-    // A fresh channel always opens pinned to the newest message.
-    stickToBottom.current = true;
+    // A jump parks the reader mid-history on purpose; only an ordinary open
+    // pins to the newest message.
+    stickToBottom.current = !focus;
     restoreAnchor.current = null;
-    setFollowingLatest(true);
+    setFollowingLatest(!focus);
     setMissedCount(0);
+    // A message inside a thread is reached through its root: the main
+    // transcript never renders replies, so landing there would show nothing.
+    const anchorId = focus ? focus.threadRootId ?? focus.messageId : 0;
     try {
       const [messageData, rosterData] = await Promise.all([
-        api<{ messages: Message[]; hasMore?: boolean; requiresJoin: boolean }>(`/api/channels/${encodeURIComponent(channelId)}/messages`),
+        api<{
+          messages: Message[];
+          hasMore?: boolean;
+          hasNewer?: boolean;
+          lastReadId?: number;
+          requiresJoin: boolean;
+        }>(
+          `/api/channels/${encodeURIComponent(channelId)}/messages${anchorId ? `?around=${anchorId}` : ""}`,
+        ),
         api<{ members: RosterUser[]; agents: RosterAgent[] }>(`/api/channels/${encodeURIComponent(channelId)}/roster`),
       ]);
       setMessages(messageData.messages);
       setHasOlder(Boolean(messageData.hasMore));
+      hasNewerRef.current = Boolean(messageData.hasNewer);
+      setHasNewer(hasNewerRef.current);
+      setUnreadFrom(Number(messageData.lastReadId ?? 0));
       setRequiresJoin(messageData.requiresJoin);
       setRosterUsers(rosterData.members);
       setRosterAgents(rosterData.agents);
       setThreadRoot(null);
       setThreadMessages([]);
+      // Opening the thread needs the root message, which has only just landed;
+      // the effect watching `messages` picks this up.
+      pendingThreadFocus.current = focus?.threadRootId ? focus : null;
+      if (focus) {
+        highlightSeq.current += 1;
+        setHighlight({ id: focus.messageId, anchorId, nonce: highlightSeq.current });
+      }
       const latest = messageData.messages.at(-1)?.id ?? 0;
       readCursor.current = latest;
-      if (latest) await markRead(channelId, latest);
+      // Only a page that actually reaches the tail has seen everything; a jump
+      // into the middle must not mark the messages past it as read.
+      if (latest && !messageData.hasNewer) await markRead(channelId, latest);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setLoadingChannel(false);
     }
   }, [boot?.authenticated, markRead]);
+
+  /** Lands on one message anywhere in the workspace, switching channel if need be. */
+  const jumpToMessage = useCallback((target: FocusTarget) => {
+    focusTarget.current = target;
+    setFocusNonce((current) => current + 1);
+    setSidebarOpen(false);
+    setSelectedChannelId(target.channelId);
+  }, []);
 
   const loadOlder = useCallback(async () => {
     const node = messageScroll.current;
@@ -714,6 +852,30 @@ export function TeamAgentsApp() {
     }
   }, [messages, hasOlder, olderPending, selectedChannelId]);
 
+  // The forward counterpart of `loadOlder`, reachable only after a jump has
+  // parked the reader mid-history. Appending needs no anchor restore: content
+  // added below the viewport does not move what is already on screen.
+  const loadNewer = useCallback(async () => {
+    const newest = messages.at(-1)?.id;
+    if (!newest || !hasNewer || newerPending || !selectedChannelId) return;
+    setNewerPending(true);
+    try {
+      const data = await api<{ messages: Message[]; hasNewer?: boolean }>(
+        `/api/channels/${encodeURIComponent(selectedChannelId)}/messages?after=${newest}`,
+      );
+      hasNewerRef.current = Boolean(data.hasNewer);
+      setHasNewer(hasNewerRef.current);
+      setMessages((current) => {
+        const known = new Set(current.map((message) => message.id));
+        return [...current, ...data.messages.filter((message) => !known.has(message.id))];
+      });
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setNewerPending(false);
+    }
+  }, [messages, hasNewer, newerPending, selectedChannelId]);
+
   // Anchor restore takes priority over follow-the-latest: a prepended page must
   // never be mistaken for new output at the bottom.
   useLayoutEffect(() => {
@@ -734,6 +896,41 @@ export function TeamAgentsApp() {
     }
   }, [messages, loadingChannel]);
 
+  /**
+   * Centres the message a jump was about. A reply needs both panes moved: the
+   * thread pane onto the reply itself, and the transcript behind it onto the
+   * root, or the channel is left showing whatever happened to be at the top of
+   * the loaded window. Each pane is moved once per landing, so a streaming
+   * answer in the same channel cannot keep dragging the reader back.
+   */
+  useLayoutEffect(() => {
+    if (!highlight) return;
+    const main = messageScroll.current;
+    if (main && scrolledMain.current !== highlight.nonce) {
+      const target = main.querySelector<HTMLElement>(`[data-message-id="${highlight.anchorId}"]`);
+      if (target) {
+        scrolledMain.current = highlight.nonce;
+        centreOn(main, target);
+      }
+    }
+    // Only when the landing is a reply: otherwise the root is the target and
+    // the transcript above has already been moved onto it.
+    const thread = threadScroll.current;
+    if (highlight.anchorId !== highlight.id && thread && scrolledThread.current !== highlight.nonce) {
+      const target = thread.querySelector<HTMLElement>(`[data-message-id="${highlight.id}"]`);
+      if (target) {
+        scrolledThread.current = highlight.nonce;
+        centreOn(thread, target);
+      }
+    }
+  }, [highlight, messages, threadMessages, loadingChannel]);
+
+  useEffect(() => {
+    if (!highlight) return;
+    const timer = window.setTimeout(() => setHighlight(null), 2_600);
+    return () => window.clearTimeout(timer);
+  }, [highlight]);
+
   // A reflow — window resize, phone rotation, the thread pane opening — changes
   // content height and would drift a pinned reader off the newest message.
   useEffect(() => {
@@ -749,31 +946,49 @@ export function TeamAgentsApp() {
   const handleMessageScroll = useCallback(() => {
     const node = messageScroll.current;
     if (!node) return;
-    const atBottom = node.scrollHeight - node.scrollTop - node.clientHeight < BOTTOM_THRESHOLD;
+    const distanceToEnd = node.scrollHeight - node.scrollTop - node.clientHeight;
+    // Reaching the end of a window that has more after it is not the same as
+    // being at the live tail, so following stays off until the gap is closed.
+    const atBottom = distanceToEnd < BOTTOM_THRESHOLD && !hasNewer;
     stickToBottom.current = atBottom;
     setFollowingLatest(atBottom);
     if (atBottom) setMissedCount(0);
     if (node.scrollTop < 160) void loadOlder();
-  }, [loadOlder]);
+    if (hasNewer && distanceToEnd < 320) void loadNewer();
+  }, [loadOlder, loadNewer, hasNewer]);
 
   const scrollToLatest = useCallback(() => {
     const node = messageScroll.current;
     if (!node) return;
+    // Parked mid-history the tail is not loaded at all, so "latest" means
+    // re-opening the channel rather than scrolling to the end of the DOM.
+    if (hasNewer) {
+      void loadChannel(selectedChannelId);
+      return;
+    }
     stickToBottom.current = true;
     setFollowingLatest(true);
     setMissedCount(0);
     pinToBottom(node);
-  }, []);
+  }, [hasNewer, loadChannel, selectedChannelId]);
 
   useEffect(() => {
     let active = true;
+    // Applied at most once per jump: switching back to a channel later must not
+    // replay the landing that took the reader there the first time.
+    const target = focusNonce > appliedFocus.current
+      && focusTarget.current?.channelId === selectedChannelId
+      ? focusTarget.current
+      : null;
     queueMicrotask(() => {
-      if (active) void loadChannel(selectedChannelId);
+      if (!active) return;
+      if (target) appliedFocus.current = focusNonce;
+      void loadChannel(selectedChannelId, target);
     });
     return () => {
       active = false;
     };
-  }, [selectedChannelId, loadChannel]);
+  }, [selectedChannelId, focusNonce, loadChannel]);
 
   useEffect(() => {
     if (!selectedChannelId || requiresJoin || !boot?.authenticated) return;
@@ -831,7 +1046,14 @@ export function TeamAgentsApp() {
                   ? { ...candidate, replyCount: Math.max(candidate.replyCount, current.filter((item) => item.threadRootId === message.threadRootId).length) }
                   : candidate));
             } else {
-              setMessages((current) => upsertMessage(current, message));
+              setMessages((current) => {
+                // Parked mid-history the tail is not loaded, so appending a
+                // live message would fake adjacency across the gap. Updates to
+                // something already on screen still land.
+                const known = current.some((candidate) => candidate.id === message.id);
+                if (!known && hasNewerRef.current) return current;
+                return upsertMessage(current, message);
+              });
             }
           }
           if (payload.kind === "member.updated") {
@@ -926,11 +1148,49 @@ export function TeamAgentsApp() {
         tone: run.status === "completed" ? "done" : run.status === "failed" ? "failed" : "attention",
         title,
         body,
-        channelId: run.channelId,
+        focus: {
+          channelId: run.channelId,
+          messageId: run.responseMessageId,
+          threadRootId: run.threadRootId,
+        },
       });
       notifyDesktop(title, body);
     }
   }, [runs, t, pushToast]);
+
+  /**
+   * The other half of "being called on": a teammate naming you is announced the
+   * same way a finished run is. Without this the only signal is a badge in the
+   * sidebar, which says nothing at all from another tab.
+   */
+  useEffect(() => {
+    const channels = boot?.channels;
+    if (!channels) return;
+    const seen = mentionSnapshot.current;
+    if (!mentionsPrimed.current) {
+      // First load: mentions already waiting are a backlog, not an interruption.
+      mentionsPrimed.current = true;
+      for (const channel of channels) seen.set(channel.id, channel.latestMentionId ?? 0);
+      return;
+    }
+    for (const channel of channels) {
+      const latest = channel.latestMentionId ?? 0;
+      const previous = seen.get(channel.id) ?? 0;
+      seen.set(channel.id, latest);
+      if (latest <= previous) continue;
+      // Watching the channel it landed in is the notification.
+      if (channel.id === selectedChannelId && document.visibilityState === "visible") continue;
+      const title = t.toastMention(channel.latestMentionFrom ?? "");
+      const body = t.inChannel(channel.name);
+      pushToast({
+        tone: "attention",
+        title,
+        body,
+        focus: { channelId: channel.id, messageId: latest, threadRootId: null },
+      });
+      notifyDesktop(title, body);
+    }
+  }, [boot?.channels, selectedChannelId, t, pushToast]);
 
   const unreadElsewhere = (boot?.channels ?? []).reduce(
     (sum, channel) => sum + (channel.id === selectedChannelId ? 0 : channel.unreadCount),
@@ -940,6 +1200,19 @@ export function TeamAgentsApp() {
   useEffect(() => {
     document.title = unreadElsewhere > 0 ? `(${unreadElsewhere}) Team Agents` : "Team Agents";
   }, [unreadElsewhere]);
+
+  // Search is reached often enough to deserve a key rather than a trip to the
+  // sidebar, and ⌘K is the shortcut every tool with a search box has trained.
+  useEffect(() => {
+    if (!boot?.authenticated) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "k") return;
+      event.preventDefault();
+      setModal((current) => (current === "search" ? null : "search"));
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [boot?.authenticated]);
 
   // Agents this reader owns that are not in the open channel yet. Offering them
   // in the mention menu is what removes the modal detour: pick one and it joins.
@@ -981,7 +1254,7 @@ export function TeamAgentsApp() {
     else setPrefill(seed);
   }, []);
 
-  const openThread = async (message: Message) => {
+  const openThread = useCallback(async (message: Message) => {
     setThreadRoot(message);
     try {
       const data = await api<{ messages: Message[]; root: Message }>(
@@ -992,7 +1265,18 @@ export function TeamAgentsApp() {
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     }
-  };
+  }, []);
+
+  // A landing inside a thread needs the pane open before the reply exists to
+  // scroll to, and the root only becomes available once the channel has loaded.
+  useEffect(() => {
+    const target = pendingThreadFocus.current;
+    if (!target || loadingChannel) return;
+    const root = messages.find((message) => message.id === target.threadRootId);
+    if (!root) return;
+    pendingThreadFocus.current = null;
+    void openThread(root);
+  }, [messages, loadingChannel, openThread]);
 
   if (!boot) return <LoadingScreen />;
   if (!boot.authenticated || !boot.user) {
@@ -1007,6 +1291,14 @@ export function TeamAgentsApp() {
 
   const filteredChannels = (boot.channels ?? []).filter((channel) =>
     channel.name.toLowerCase().includes(channelFilter.toLowerCase()));
+
+  // Where this reader left off. Anchored to the cursor as it stood when the
+  // channel opened, so the divider holds its place while everything below it is
+  // marked read underneath. Zero on a first visit — there is no "left off" yet.
+  const firstUnreadId = unreadFrom
+    ? messages.find((message) =>
+      message.id > unreadFrom && message.sender.id !== boot.user!.id)?.id ?? 0
+    : 0;
 
   return (
     <main className="workspace-shell">
@@ -1032,6 +1324,11 @@ export function TeamAgentsApp() {
         </div>
 
         <nav className="primary-nav">
+          <button className="nav-row" onClick={() => setModal("search")}>
+            <Search size={17} />
+            <span>{t.search}</span>
+            <span className="nav-shortcut">{shortcutPrefix()}K</span>
+          </button>
           <button className="nav-row" onClick={() => setModal("agents")}>
             <Bot size={17} />
             <span>{t.agents}</span>
@@ -1050,10 +1347,13 @@ export function TeamAgentsApp() {
             <RunTray
               locale={locale}
               runs={runs ?? []}
-              onOpenChannel={(channelId) => {
-                setSelectedChannelId(channelId);
+              onOpenRun={(run) => {
                 setRunsOpen(false);
-                setSidebarOpen(false);
+                jumpToMessage({
+                  channelId: run.channelId,
+                  messageId: run.responseMessageId,
+                  threadRootId: run.threadRootId,
+                });
               }}
               onAction={(run, action) => runAction(run.id, action, setError)}
             />
@@ -1200,11 +1500,17 @@ export function TeamAgentsApp() {
                                 <span>{dayLabel(message.createdAt, locale)}</span>
                               </div>
                             )}
+                            {message.id === firstUnreadId && (
+                              <div className="unread-divider">
+                                <span>{t.newMessagesDivider}</span>
+                              </div>
+                            )}
                             <MessageCard
                               message={message}
                               currentUser={boot.user!}
                               locale={locale}
                               mentionPlugin={mentionPlugin}
+                              highlighted={highlight?.id === message.id}
                               onThread={() => openThread(message)}
                               onReact={(emoji) => reactToMessage(message.id, emoji, selectedChannel.id, setMessages, setError)}
                               onRunAction={(action) => runAction(message.runId, action, setError)}
@@ -1229,6 +1535,18 @@ export function TeamAgentsApp() {
                           </button>
                         )}
                       </div>
+                    )}
+                    {/* Only reachable after a jump has parked the transcript
+                        mid-history; at the tail there is nothing newer to get. */}
+                    {hasNewer && !loadingChannel && (
+                      <button
+                        className="history-top history-bottom"
+                        onClick={() => void loadNewer()}
+                        disabled={newerPending}
+                      >
+                        <RefreshCw className={newerPending ? "spin" : ""} size={14} />
+                        {newerPending ? t.loadingNewer : t.loadNewer}
+                      </button>
                     )}
                   </div>
                   {!followingLatest && (
@@ -1276,12 +1594,13 @@ export function TeamAgentsApp() {
               <X size={18} />
             </button>
           </header>
-          <div className="thread-scroll">
+          <div className="thread-scroll" ref={threadScroll}>
             <MessageCard
               message={threadRoot}
               currentUser={boot.user}
               locale={locale}
               mentionPlugin={mentionPlugin}
+              highlighted={highlight?.id === threadRoot.id}
               isThreadRoot
               onThread={() => undefined}
               onReact={(emoji) => reactToMessage(threadRoot.id, emoji, selectedChannel.id, setMessages, setError)}
@@ -1298,6 +1617,7 @@ export function TeamAgentsApp() {
                 currentUser={boot.user!}
                 locale={locale}
                 mentionPlugin={mentionPlugin}
+                highlighted={highlight?.id === message.id}
                 compact
                 onThread={() => undefined}
                 onReact={(emoji) => reactToMessage(message.id, emoji, selectedChannel.id, setThreadMessages, setError)}
@@ -1331,6 +1651,14 @@ export function TeamAgentsApp() {
           }}
         />
       )}
+      {modal === "search" && (
+        <SearchModal
+          locale={locale}
+          channel={selectedChannel}
+          onClose={() => setModal(null)}
+          onOpen={jumpToMessage}
+        />
+      )}
       {modal === "people" && selectedChannel && (
         <PeopleModal
           locale={locale}
@@ -1358,7 +1686,7 @@ export function TeamAgentsApp() {
       )}
       <ToastStack
         toasts={toasts}
-        onOpen={(channelId) => setSelectedChannelId(channelId)}
+        onOpen={jumpToMessage}
         onDismiss={(id) => setToasts((current) => current.filter((entry) => entry.id !== id))}
       />
 
@@ -1373,6 +1701,8 @@ export function TeamAgentsApp() {
             // would arrive already marked as announced — or worse, announced.
             announcedRuns.current.clear();
             runsPrimed.current = false;
+            mentionSnapshot.current.clear();
+            mentionsPrimed.current = false;
             setToasts([]);
             setBoot({ authenticated: false });
             setModal(null);
@@ -1545,10 +1875,10 @@ function RunStatusChip({ run, locale }: { run: RunSummary; locale: Locale }) {
 function RunTray(props: {
   locale: Locale;
   runs: RunSummary[];
-  onOpenChannel: (channelId: string) => void;
+  onOpenRun: (run: RunSummary) => void;
   onAction: (run: RunSummary, action: "cancel" | "retry") => void;
 }) {
-  const { locale, runs, onOpenChannel, onAction } = props;
+  const { locale, runs, onOpenRun, onAction } = props;
   const t = copy[locale];
   const active = runs.filter((run) => run.status === "queued" || run.status === "running");
   const rest = runs.filter((run) => !active.includes(run));
@@ -1560,7 +1890,10 @@ function RunTray(props: {
           <Avatar name={run.agentName} agent />
           <div className="run-tray-main">
             <strong>@{run.agentHandle}</strong>
-            <small>{t.inChannel(run.channelName)}</small>
+            <small>
+              {t.inChannel(run.channelName)}
+              {run.threadRootId ? ` · ${t.inThread}` : ""}
+            </small>
             <RunStatusChip run={run} locale={locale} />
             {run.relayTotal > 1 && (
               <em className="run-chip">{t.runRelay(run.relayIndex + 1, run.relayTotal)}</em>
@@ -1568,7 +1901,7 @@ function RunTray(props: {
             {run.progressText && <p>{run.progressText}</p>}
           </div>
           <div className="run-tray-actions">
-            <button onClick={() => onOpenChannel(run.channelId)}>{t.openChannel}</button>
+            <button onClick={() => onOpenRun(run)}>{t.openChannel}</button>
             {(run.status === "queued" || run.status === "running") && (
               <button className="danger-text" onClick={() => onAction(run, "cancel")}>{t.stop}</button>
             )}
@@ -1591,7 +1924,7 @@ function RunTray(props: {
 
 function ToastStack({ toasts, onOpen, onDismiss }: {
   toasts: Toast[];
-  onOpen: (channelId: string) => void;
+  onOpen: (target: FocusTarget) => void;
   onDismiss: (id: number) => void;
 }) {
   if (!toasts.length) return null;
@@ -1607,7 +1940,7 @@ function ToastStack({ toasts, onOpen, onDismiss }: {
           <button
             className="toast-body"
             onClick={() => {
-              if (toast.channelId) onOpen(toast.channelId);
+              if (toast.focus) onOpen(toast.focus);
               onDismiss(toast.id);
             }}
           >
@@ -1643,6 +1976,8 @@ function MessageCard(props: {
   onReact: (emoji: string) => void;
   onRunAction: (action: "cancel" | "retry") => void;
   onMention: (handle: string) => void;
+  /** Flashed for a couple of seconds after a jump lands on this message. */
+  highlighted?: boolean;
   compact?: boolean;
   isThreadRoot?: boolean;
 }) {
@@ -1655,6 +1990,7 @@ function MessageCard(props: {
     onReact,
     onRunAction,
     onMention,
+    highlighted,
     compact,
     isThreadRoot,
   } = props;
@@ -1685,13 +2021,16 @@ function MessageCard(props: {
   );
   if (system) {
     return (
-      <div className="system-message">
+      <div className="system-message" data-message-id={message.id}>
         <Sparkles size={15} /><span>{message.content}</span>
       </div>
     );
   }
   return (
-    <article className={`message-card ${agent ? "from-agent" : ""} ${compact ? "compact" : ""}`}>
+    <article
+      data-message-id={message.id}
+      className={`message-card ${agent ? "from-agent" : ""} ${compact ? "compact" : ""} ${highlighted ? "is-landed" : ""}`}
+    >
       <Avatar name={message.sender.name} agent={agent} />
       <div className="message-main">
         <header>
@@ -2191,6 +2530,181 @@ function PeopleModal(props: {
         {agents.map((agent) => (
           <div className="roster-row" key={agent.id}><Avatar name={agent.name} agent /><span><strong>{agent.name} <em className="agent-badge">AGENT</em></strong><small>@{agent.handle} · {t.ownedBy} {agent.ownerUsername}</small></span></div>
         ))}
+      </div>
+    </ModalShell>
+  );
+}
+
+/**
+ * Workspace-wide message search.
+ *
+ * The archive is this product's asset — an agent's long answer is worth more a
+ * week later than the minute it lands — and until now the only way back to one
+ * was to scroll. Results carry their thread, so a hit inside a discussion opens
+ * the pane rather than dropping the reader in the channel it belongs to.
+ */
+function SearchModal(props: {
+  locale: Locale;
+  channel: Channel | null;
+  onClose: () => void;
+  onOpen: (target: FocusTarget) => void;
+}) {
+  const { locale, channel, onClose, onOpen } = props;
+  const t = copy[locale];
+  const [query, setQuery] = useState("");
+  const [scopeChannel, setScopeChannel] = useState(false);
+  const [agentsOnly, setAgentsOnly] = useState(false);
+  const [hits, setHits] = useState<SearchHit[]>([]);
+  const [hasMore, setHasMore] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [morePending, setMorePending] = useState(false);
+  const [error, setError] = useState("");
+  // Typing outruns the network: only the response to the query still in the box
+  // may render, or an earlier, slower one would overwrite it.
+  const requestSeq = useRef(0);
+
+  const buildUrl = useCallback((before?: number) => {
+    const params = new URLSearchParams({ q: query.trim() });
+    if (scopeChannel && channel) params.set("channel", channel.id);
+    if (agentsOnly) params.set("sender", "agent");
+    if (before) params.set("before", String(before));
+    return `/api/search?${params.toString()}`;
+  }, [query, scopeChannel, agentsOnly, channel]);
+
+  // Emptying the box is handled here rather than in the effect below: it is the
+  // one transition that needs no request, and clearing from an event keeps the
+  // effect body free of the cascading renders a synchronous setState causes.
+  const updateQuery = (next: string) => {
+    setQuery(next);
+    if (next.trim()) return;
+    requestSeq.current += 1;
+    setHits([]);
+    setHasMore(false);
+    setBusy(false);
+  };
+
+  useEffect(() => {
+    if (!query.trim()) return;
+    requestSeq.current += 1;
+    const seq = requestSeq.current;
+    // The spinner is raised inside the debounce, not before it: a keystroke
+    // that is about to be superseded should not flicker one on and off.
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        setBusy(true);
+        try {
+          const data = await api<{ hits: SearchHit[]; hasMore: boolean }>(buildUrl());
+          if (seq !== requestSeq.current) return;
+          setHits(data.hits);
+          setHasMore(data.hasMore);
+          setError("");
+        } catch (cause) {
+          if (seq !== requestSeq.current) return;
+          setError(cause instanceof Error ? cause.message : String(cause));
+        } finally {
+          if (seq === requestSeq.current) setBusy(false);
+        }
+      })();
+    }, 220);
+    return () => window.clearTimeout(timer);
+  }, [query, buildUrl]);
+
+  const loadMore = async () => {
+    const oldest = hits.at(-1)?.messageId;
+    if (!oldest || morePending) return;
+    setMorePending(true);
+    try {
+      const data = await api<{ hits: SearchHit[]; hasMore: boolean }>(buildUrl(oldest));
+      setHits((current) => [...current, ...data.hits]);
+      setHasMore(data.hasMore);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setMorePending(false);
+    }
+  };
+
+  return (
+    <ModalShell title={t.search} subtitle={t.searchHint} onClose={onClose} wide>
+      <label className="search-field">
+        <Search size={17} />
+        <input
+          value={query}
+          onChange={(event) => updateQuery(event.target.value)}
+          placeholder={t.searchPlaceholder}
+          autoFocus
+          spellCheck={false}
+        />
+        {busy && <RefreshCw className="spin" size={15} />}
+      </label>
+      <div className="search-filters" role="group" aria-label={t.search}>
+        {channel && (
+          <button
+            type="button"
+            aria-pressed={scopeChannel}
+            className={scopeChannel ? "active" : ""}
+            onClick={() => setScopeChannel((current) => !current)}
+          >
+            <Hash size={13} /> {t.searchScopeChannel(channel.name)}
+          </button>
+        )}
+        <button
+          type="button"
+          aria-pressed={agentsOnly}
+          className={agentsOnly ? "active" : ""}
+          onClick={() => setAgentsOnly((current) => !current)}
+        >
+          <Bot size={13} /> {t.searchOnlyAgents}
+        </button>
+        {!scopeChannel && <span className="search-scope-note">{t.searchScopeAll}</span>}
+      </div>
+      {error && <div className="form-error">{error}</div>}
+      {/* Keyed on what the reader typed rather than on what the server reports:
+          the cause is visible in the box, and waiting for a round trip would
+          explain the slow query only after they had already waited for it. */}
+      {query.trim().length > 0 && query.trim().length < 3 && (
+        <p className="history-note"><Search size={14} /> {t.searchScanNote}</p>
+      )}
+      <div className="search-results">
+        {!query.trim() && <p className="search-placeholder">{t.searchStart}</p>}
+        {query.trim() && !busy && !hits.length && (
+          <p className="search-placeholder">{t.searchEmpty}</p>
+        )}
+        {hits.map((hit) => (
+          <button
+            className="search-hit"
+            key={hit.messageId}
+            onClick={() => {
+              onOpen({
+                channelId: hit.channelId,
+                messageId: hit.messageId,
+                threadRootId: hit.threadRootId,
+              });
+              onClose();
+            }}
+          >
+            <Avatar name={hit.senderName} agent={hit.senderType === "agent"} />
+            {/* Spans throughout: a button may only hold phrasing content, and
+                a heading or paragraph in here is invalid however it renders. */}
+            <span className="search-hit-main">
+              <span className="search-hit-head">
+                <strong>{hit.senderName}</strong>
+                {hit.senderType === "agent" && <em className="agent-badge">AGENT</em>}
+                <span className="search-hit-where">
+                  <Hash size={11} />{hit.channelName}
+                  {hit.threadRootId ? ` · ${t.inThread}` : ""}
+                </span>
+                <time dateTime={hit.createdAt}>{dayLabel(hit.createdAt, locale)}</time>
+              </span>
+              <span className="search-hit-excerpt">{hit.excerpt}</span>
+            </span>
+          </button>
+        ))}
+        {hasMore && (
+          <button className="secondary-button search-more" onClick={() => void loadMore()} disabled={morePending}>
+            {morePending ? <RefreshCw className="spin" size={14} /> : null} {t.searchMore}
+          </button>
+        )}
       </div>
     </ModalShell>
   );

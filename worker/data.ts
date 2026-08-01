@@ -197,7 +197,7 @@ export async function listPublicMessages(
   env: Env,
   channelId: string,
   currentUserId: string,
-  options: { before?: number; threadRootId?: number; limit?: number } = {},
+  options: { before?: number; after?: number; threadRootId?: number; limit?: number } = {},
 ): Promise<PublicMessage[]> {
   const limit = Math.min(100, Math.max(1, options.limit ?? 50));
   const binds: unknown[] = [channelId];
@@ -212,7 +212,14 @@ export async function listPublicMessages(
     where.push("m.id<?");
     binds.push(options.before);
   }
+  if (options.after) {
+    where.push("m.id>?");
+    binds.push(options.after);
+  }
   binds.push(limit);
+  // Walking forward takes the rows nearest the cursor, which for `after` are
+  // the oldest ones — the opposite end of the range from every other page.
+  const forward = Boolean(options.after);
   const rows = await env.DB.prepare(
     `SELECT m.*,u.username,a.name AS agent_name,a.handle AS agent_handle,
       a.owner_user_id AS agent_owner_user_id,trigger.sender_user_id AS run_trigger_user_id,
@@ -223,11 +230,19 @@ export async function listPublicMessages(
      LEFT JOIN agent_runs ar ON ar.id=m.run_id
      LEFT JOIN messages trigger ON trigger.id=ar.trigger_message_id
      WHERE ${where.join(" AND ")}
-     ORDER BY m.id DESC LIMIT ?`,
+     ORDER BY m.id ${forward ? "ASC" : "DESC"} LIMIT ?`,
   ).bind(...binds).all<MessageRow>();
   if (!rows.results.length) return [];
+  return await enrichMessages(env, forward ? rows.results : rows.results.reverse(), currentUserId);
+}
 
-  const ids = rows.results.map((row) => row.id);
+/** Attaches reactions and reply counts to an already-ordered page of rows. */
+async function enrichMessages(
+  env: Env,
+  ordered: MessageRow[],
+  currentUserId: string,
+): Promise<PublicMessage[]> {
+  const ids = ordered.map((row) => row.id);
   const placeholders = ids.map(() => "?").join(",");
   const [reactionRows, replyRows] = await Promise.all([
     env.DB.prepare(
@@ -254,13 +269,186 @@ export async function listPublicMessages(
     reactionsByMessage.set(reaction.message_id, list);
   }
   const repliesByMessage = new Map(replyRows.results.map((row) => [row.thread_root_id, row.count]));
-  return rows.results
-    .reverse()
-    .map((row) => mapMessage(
-      row,
-      reactionsByMessage.get(row.id) ?? [],
-      repliesByMessage.get(row.id) ?? 0,
-    ));
+  return ordered.map((row) => mapMessage(
+    row,
+    reactionsByMessage.get(row.id) ?? [],
+    repliesByMessage.get(row.id) ?? 0,
+  ));
+}
+
+/** Half of an `around` window, per side of the target message. */
+const HALF_WINDOW = 25;
+
+export interface MessageWindow {
+  messages: PublicMessage[];
+  /** Older messages exist before the first row of this window. */
+  hasMore: boolean;
+  /** Newer messages exist after the last row — true only away from the tail. */
+  hasNewer: boolean;
+}
+
+/**
+ * A page centred on one message rather than on the tail of the channel.
+ *
+ * This is what makes "go to the answer" land on the answer. Both halves
+ * over-fetch by one row so the caller learns, from the same two queries,
+ * whether the transcript continues in either direction — a reader who arrives
+ * mid-history has to be able to page both ways out of where they landed.
+ */
+export async function listMessagesAround(
+  env: Env,
+  channelId: string,
+  currentUserId: string,
+  messageId: number,
+  threadRootId?: number,
+): Promise<MessageWindow> {
+  const [olderPage, newerPage] = await Promise.all([
+    // `before: messageId + 1` is `id <= messageId`: the target itself anchors
+    // the older half rather than being skipped by a strict `<`.
+    listPublicMessages(env, channelId, currentUserId, {
+      before: messageId + 1,
+      threadRootId,
+      limit: HALF_WINDOW + 1,
+    }),
+    listPublicMessages(env, channelId, currentUserId, {
+      after: messageId,
+      threadRootId,
+      limit: HALF_WINDOW + 1,
+    }),
+  ]);
+  const older = splitMessagePage(olderPage, HALF_WINDOW);
+  const hasNewer = newerPage.length > HALF_WINDOW;
+  return {
+    messages: [...older.messages, ...newerPage.slice(0, HALF_WINDOW)],
+    hasMore: older.hasMore,
+    hasNewer,
+  };
+}
+
+export interface SearchHit {
+  messageId: number;
+  channelId: string;
+  channelName: string;
+  threadRootId: number | null;
+  senderType: "user" | "agent" | "system";
+  senderName: string;
+  senderHandle: string | null;
+  excerpt: string;
+  createdAt: string;
+}
+
+/** Trigram cannot index anything shorter, so this is where the scan starts. */
+export const SEARCH_MIN_INDEXED_LENGTH = 3;
+const SEARCH_PAGE_SIZE = 30;
+
+/**
+ * Searches every channel this reader can actually read.
+ *
+ * The visibility rule is membership — not the looser rule the sidebar uses. A
+ * public channel you have not joined lists its name but returns no messages on
+ * open, so surfacing its contents through search would be a way around that.
+ */
+export async function searchMessages(
+  env: Env,
+  user: AuthUser,
+  options: {
+    query: string;
+    channelId?: string;
+    senderType?: "user" | "agent";
+    before?: number;
+    indexed: boolean;
+  },
+): Promise<{ hits: SearchHit[]; hasMore: boolean; mode: "index" | "scan" }> {
+  const query = options.query.trim();
+  if (!query) return { hits: [], hasMore: false, mode: options.indexed ? "index" : "scan" };
+  const indexed = options.indexed && query.length >= SEARCH_MIN_INDEXED_LENGTH;
+  const binds: unknown[] = [];
+  const where: string[] = [];
+  if (indexed) {
+    // Quoted as a phrase so the whole string is matched literally: chat search
+    // is a substring question, not a boolean-operator one, and an unescaped
+    // query would otherwise let FTS5 syntax leak in from the search box.
+    binds.push(`"${query.replace(/"/g, '""')}"`);
+  } else {
+    where.push("instr(lower(m.content),lower(?))>0");
+    binds.push(query);
+  }
+  where.push("m.status NOT IN ('queued','streaming')");
+  where.push(
+    `(EXISTS(SELECT 1 FROM channel_members cm
+       WHERE cm.channel_id=m.channel_id AND cm.user_id=?) OR ?='owner')`,
+  );
+  binds.push(user.id, user.role);
+  if (options.channelId) {
+    where.push("m.channel_id=?");
+    binds.push(options.channelId);
+  }
+  if (options.senderType) {
+    where.push("m.sender_type=?");
+    binds.push(options.senderType);
+  }
+  if (options.before) {
+    where.push("m.id<?");
+    binds.push(options.before);
+  }
+  binds.push(SEARCH_PAGE_SIZE + 1);
+  const rows = await env.DB.prepare(
+    `SELECT m.id,m.channel_id,m.thread_root_id,m.sender_type,m.content,m.created_at,
+      c.name AS channel_name,u.username,a.name AS agent_name,a.handle AS agent_handle
+     FROM ${indexed ? "messages_fts JOIN messages m ON m.id=messages_fts.rowid" : "messages m"}
+     JOIN channels c ON c.id=m.channel_id AND c.archived_at IS NULL
+     LEFT JOIN users u ON u.id=m.sender_user_id
+     LEFT JOIN agents a ON a.id=m.sender_agent_id
+     WHERE ${indexed ? "messages_fts MATCH ? AND " : ""}${where.join(" AND ")}
+     ORDER BY m.id DESC LIMIT ?`,
+  ).bind(...binds).all<{
+    id: number;
+    channel_id: string;
+    thread_root_id: number | null;
+    sender_type: "user" | "agent" | "system";
+    content: string;
+    created_at: string;
+    channel_name: string;
+    username: string | null;
+    agent_name: string | null;
+    agent_handle: string | null;
+  }>();
+  const hasMore = rows.results.length > SEARCH_PAGE_SIZE;
+  return {
+    hits: rows.results.slice(0, SEARCH_PAGE_SIZE).map((row) => ({
+      messageId: row.id,
+      channelId: row.channel_id,
+      channelName: row.channel_name,
+      threadRootId: row.thread_root_id,
+      senderType: row.sender_type,
+      senderName: row.sender_type === "user"
+        ? row.username ?? "Former member"
+        : row.sender_type === "agent"
+          ? row.agent_name ?? "Agent"
+          : "Team Agents",
+      senderHandle: row.agent_handle,
+      excerpt: searchExcerpt(row.content, query),
+      createdAt: row.created_at,
+    })),
+    hasMore,
+    mode: indexed ? "index" : "scan",
+  };
+}
+
+const EXCERPT_RADIUS = 90;
+
+/**
+ * A window of the message around the first hit, so a match 4,000 characters
+ * into an agent's report is visible in the result row instead of being cut off
+ * by a plain head-truncation.
+ */
+export function searchExcerpt(content: string, query: string): string {
+  const collapsed = content.replace(/\s+/g, " ").trim();
+  const at = collapsed.toLowerCase().indexOf(query.toLowerCase());
+  if (at < 0) return collapsed.slice(0, EXCERPT_RADIUS * 2);
+  const start = Math.max(0, at - EXCERPT_RADIUS);
+  const end = Math.min(collapsed.length, at + query.length + EXCERPT_RADIUS);
+  return `${start > 0 ? "…" : ""}${collapsed.slice(start, end)}${end < collapsed.length ? "…" : ""}`;
 }
 
 function mapMessage(

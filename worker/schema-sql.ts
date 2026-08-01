@@ -187,6 +187,75 @@ export const SCHEMA_STATEMENTS = [
 ] as const;
 
 /**
+ * Full-text search over settled message content.
+ *
+ * A standalone FTS5 table rather than an external-content one: an agent answer
+ * is rewritten every ~350ms while it streams, and external content requires
+ * every delete to be issued with the exact text that was indexed — an invariant
+ * a streaming row cannot hold. A standalone table deletes by rowid alone, so
+ * the triggers stay correct however often the row churns.
+ *
+ * `trigram` rather than the default `unicode61` tokenizer: unicode61 does not
+ * segment Chinese, so a whole CJK sentence would index as one token and only
+ * ever match itself. Trigram indexes every three-character window, which gives
+ * substring matching in both languages. Its floor is also three characters —
+ * shorter queries fall back to a scan (see `searchMessages`).
+ */
+export const SEARCH_STATEMENTS = [
+  `CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+    content,
+    tokenize='trigram'
+  )`,
+  // Only settled text is indexed. A queued placeholder ("Thinking…") and the
+  // half-written body of a streaming answer are not things anyone means to find,
+  // and indexing them would rewrite the same document dozens of times per turn.
+  `CREATE TRIGGER IF NOT EXISTS messages_fts_insert AFTER INSERT ON messages
+   BEGIN
+     INSERT INTO messages_fts(rowid,content)
+     SELECT new.id,new.content WHERE new.status NOT IN ('queued','streaming');
+   END`,
+  `CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE ON messages
+   BEGIN
+     DELETE FROM messages_fts WHERE rowid=old.id;
+     INSERT INTO messages_fts(rowid,content)
+     SELECT new.id,new.content WHERE new.status NOT IN ('queued','streaming');
+   END`,
+  `CREATE TRIGGER IF NOT EXISTS messages_fts_delete AFTER DELETE ON messages
+   BEGIN
+     DELETE FROM messages_fts WHERE rowid=old.id;
+   END`,
+] as const;
+
+/** Indexes what shipped before the index existed. Idempotent, so a racing
+ *  isolate cannot double-insert a row. */
+const SEARCH_BACKFILL = `INSERT INTO messages_fts(rowid,content)
+   SELECT m.id,m.content FROM messages m
+   WHERE m.status NOT IN ('queued','streaming')
+     AND NOT EXISTS(SELECT 1 FROM messages_fts f WHERE f.rowid=m.id)`;
+
+let searchIndexReady = false;
+
+/**
+ * Whether `messages_fts` is usable. False leaves search on the scan path rather
+ * than failing the request: a tokenizer this build does not carry must degrade
+ * the feature, not the deployment.
+ */
+export function isSearchIndexReady(): boolean {
+  return searchIndexReady;
+}
+
+async function ensureSearchIndex(db: D1Database): Promise<void> {
+  // The backfill is a full pass over `messages`, so it runs only on the
+  // deployment that first creates the table — not on every cold isolate.
+  const existing = await db.prepare(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'",
+  ).first<{ name: string }>();
+  for (const sql of SEARCH_STATEMENTS) await db.prepare(sql).run();
+  if (!existing) await db.prepare(SEARCH_BACKFILL).run();
+  searchIndexReady = true;
+}
+
+/**
  * Columns added after a table shipped. `CREATE TABLE IF NOT EXISTS` is a no-op
  * on a database that already has the table, so a new column would never reach
  * production without this pass. SQLite has no `ADD COLUMN IF NOT EXISTS`, hence
@@ -235,6 +304,14 @@ export function ensureSchema(db: D1Database): Promise<void> {
       }
       await addMissingColumns(db);
       await db.batch(POST_COLUMN_STATEMENTS.map((sql) => db.prepare(sql)));
+      // Isolated: search is the one feature here that depends on an optional
+      // SQLite compile-time module, and losing it must not take the app down.
+      try {
+        await ensureSearchIndex(db);
+      } catch (error) {
+        searchIndexReady = false;
+        console.error("Search index unavailable, falling back to scan:", error);
+      }
     })().catch((error) => {
       initialized = null;
       throw error;

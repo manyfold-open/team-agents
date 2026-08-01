@@ -50,7 +50,14 @@ describe("transcript reading behaviour", () => {
     // Assignment, not `+=`: CSS scroll anchoring already applies this delta, so
     // incrementing would double-count it and fling the reader to the bottom.
     expect(appSource).toMatch(/node\.scrollTop = anchor\.top \+ \(node\.scrollHeight - anchor\.height\)/);
-    expect(appSource).not.toMatch(/node\.scrollTop \+= /);
+    // Scoped to the restore branch rather than the whole file: centring a jump
+    // target does adjust scrollTop relatively, and correctly so — it measures
+    // live rects instead of a delta the browser may already have applied.
+    const restoreBranch = appSource.slice(
+      appSource.indexOf("const anchor = restoreAnchor.current;"),
+      appSource.indexOf("if (stickToBottom.current) {"),
+    );
+    expect(restoreBranch).not.toMatch(/node\.scrollTop \+= /);
   });
 
   it("only counts a message as read when it could have been seen", () => {

@@ -21,14 +21,16 @@ import {
 } from "./security";
 import {
   getPublicMessage,
+  listMessagesAround,
   listPublicMessages,
   MESSAGE_PAGE_SIZE,
   recordChannelEvent,
   requireChannelAccess,
   requireChannelMember,
+  searchMessages,
   splitMessagePage,
 } from "./data";
-import { ensureSchema } from "./schema-sql";
+import { ensureSchema, isSearchIndexReady } from "./schema-sql";
 import { agentHttpError, fetchAgentCard, verifyAgentCredentials, type AgentCardSummary } from "./a2a";
 import {
   cancelManyfoldConnect,
@@ -77,6 +79,9 @@ export async function handleApiRequest(
     }
     if (url.pathname === "/api/channels" && request.method === "POST") {
       return await createChannel(request, env);
+    }
+    if (url.pathname === "/api/search" && request.method === "GET") {
+      return await search(request, env);
     }
     if (url.pathname === "/api/agents" && request.method === "GET") {
       return await listAgents(request, env);
@@ -361,6 +366,24 @@ async function listChannels(env: Env, user: AuthUser): Promise<unknown[]> {
         WHERE m.channel_id=c.id
           AND m.id>COALESCE(rc.last_message_id,0)
           AND (m.sender_user_id IS NULL OR m.sender_user_id<>?)) AS mention_count,
+      -- The newest unread message naming this reader, and who wrote it. The
+      -- client compares the id across polls to decide what is genuinely new,
+      -- and jumps straight to it rather than dropping them at the channel tail.
+      (SELECT MAX(m.id) FROM messages m
+        JOIN message_mentions mm
+          ON mm.message_id=m.id AND mm.kind='user' AND mm.target_id=?
+        WHERE m.channel_id=c.id
+          AND m.id>COALESCE(rc.last_message_id,0)
+          AND (m.sender_user_id IS NULL OR m.sender_user_id<>?)) AS latest_mention_id,
+      (SELECT COALESCE(mu.username,ma.name) FROM messages m
+        JOIN message_mentions mm
+          ON mm.message_id=m.id AND mm.kind='user' AND mm.target_id=?
+        LEFT JOIN users mu ON mu.id=m.sender_user_id
+        LEFT JOIN agents ma ON ma.id=m.sender_agent_id
+        WHERE m.channel_id=c.id
+          AND m.id>COALESCE(rc.last_message_id,0)
+          AND (m.sender_user_id IS NULL OR m.sender_user_id<>?)
+        ORDER BY m.id DESC LIMIT 1) AS latest_mention_from,
       (SELECT COUNT(*) FROM agent_runs ar
         WHERE ar.channel_id=c.id AND ar.status IN ('queued','running')) AS active_run_count,
       (SELECT COUNT(*) FROM channel_members x WHERE x.channel_id=c.id) AS member_count,
@@ -371,7 +394,9 @@ async function listChannels(env: Env, user: AuthUser): Promise<unknown[]> {
      WHERE c.workspace_id='main' AND c.archived_at IS NULL
        AND (c.is_private=0 OR cm.user_id IS NOT NULL OR ?='owner')
      ORDER BY latest_message_id DESC,c.name COLLATE NOCASE`,
-  ).bind(user.id, user.id, user.id, user.id, user.id, user.role).all<{
+    // Nine `user.id` binds, in query order: unread_count, mention_count (×2),
+    // latest_mention_id (×2), latest_mention_from (×2), then the two joins.
+  ).bind(...Array<string>(9).fill(user.id), user.role).all<{
     id: string;
     name: string;
     slug: string;
@@ -382,6 +407,8 @@ async function listChannels(env: Env, user: AuthUser): Promise<unknown[]> {
     last_read_id: number;
     unread_count: number;
     mention_count: number;
+    latest_mention_id: number | null;
+    latest_mention_from: string | null;
     active_run_count: number;
     member_count: number;
     agent_count: number;
@@ -397,6 +424,8 @@ async function listChannels(env: Env, user: AuthUser): Promise<unknown[]> {
     unread: Number(row.unread_count) > 0,
     unreadCount: Number(row.unread_count),
     mentionCount: Number(row.mention_count),
+    latestMentionId: row.latest_mention_id ? Number(row.latest_mention_id) : null,
+    latestMentionFrom: row.latest_mention_from,
     activeRunCount: Number(row.active_run_count),
     latestMessageId: Number(row.latest_message_id),
     memberCount: Number(row.member_count),
@@ -550,17 +579,64 @@ async function getMessages(request: Request, env: Env, channelId: string): Promi
   }
   const url = new URL(request.url);
   const before = Number(url.searchParams.get("before") ?? 0) || undefined;
+  const after = Number(url.searchParams.get("after") ?? 0) || undefined;
+  const around = Number(url.searchParams.get("around") ?? 0) || undefined;
   const threadRootId = Number(url.searchParams.get("thread") ?? 0) || undefined;
-  const { messages, hasMore } = splitMessagePage(
-    await listPublicMessages(env, channelId, user.id, {
-      before,
+  // Read before the client marks anything: this is where the unread divider is
+  // anchored, and the cursor moves the moment the channel is opened.
+  const cursor = await env.DB.prepare(
+    "SELECT last_message_id FROM read_cursors WHERE channel_id=? AND user_id=?",
+  ).bind(channelId, user.id).first<{ last_message_id: number }>();
+  const lastReadId = Number(cursor?.last_message_id ?? 0);
+
+  let messages;
+  let hasMore;
+  let hasNewer = false;
+  if (around) {
+    ({ messages, hasMore, hasNewer } = await listMessagesAround(
+      env,
+      channelId,
+      user.id,
+      around,
+      threadRootId,
+    ));
+  } else if (after) {
+    const page = await listPublicMessages(env, channelId, user.id, {
+      after,
       threadRootId,
       limit: MESSAGE_PAGE_SIZE + 1,
-    }),
-  );
+    });
+    hasNewer = page.length > MESSAGE_PAGE_SIZE;
+    messages = page.slice(0, MESSAGE_PAGE_SIZE);
+    hasMore = true;
+  } else {
+    ({ messages, hasMore } = splitMessagePage(
+      await listPublicMessages(env, channelId, user.id, {
+        before,
+        threadRootId,
+        limit: MESSAGE_PAGE_SIZE + 1,
+      }),
+    ));
+  }
   let root = null;
   if (threadRootId) root = await getPublicMessage(env, threadRootId, user.id);
-  return json({ channel, messages, root, hasMore, requiresJoin: false });
+  return json({ channel, messages, root, hasMore, hasNewer, lastReadId, requiresJoin: false });
+}
+
+async function search(request: Request, env: Env): Promise<Response> {
+  const user = await requireAuth(request, env);
+  const url = new URL(request.url);
+  const query = (url.searchParams.get("q") ?? "").slice(0, 200);
+  if (!query.trim()) return json({ hits: [], hasMore: false, mode: "index", query: "" });
+  const senderType = url.searchParams.get("sender");
+  const result = await searchMessages(env, user, {
+    query,
+    channelId: url.searchParams.get("channel") ?? undefined,
+    senderType: senderType === "agent" || senderType === "user" ? senderType : undefined,
+    before: Number(url.searchParams.get("before") ?? 0) || undefined,
+    indexed: isSearchIndexReady(),
+  });
+  return json({ ...result, query: query.trim() });
 }
 
 async function getRoster(request: Request, env: Env, channelId: string): Promise<Response> {
