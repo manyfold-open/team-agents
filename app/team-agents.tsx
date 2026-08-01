@@ -178,8 +178,10 @@ type Toast = {
   focus?: FocusTarget;
 };
 type Modal = "channel" | "people" | "agents" | "channel-agents" | "account" | "search" | null;
-/** Composer seed; `nonce` makes repeat inserts of the same handle distinct. */
-type Prefill = { text: string; nonce: number };
+/** Composer seed; `nonce` makes repeat inserts of the same handle distinct.
+ *  `scope` pins the seed to the channel or thread it was written for, so a
+ *  keyed composer remount in another channel never picks it up. */
+type Prefill = { text: string; nonce: number; scope: string };
 
 const copy = {
   zh: {
@@ -1341,13 +1343,14 @@ export function TeamAgentsApp() {
   }, [selectedChannelId, refreshBootstrap]);
 
   const mentionInComposer = useCallback((handle: string, inThread: boolean) => {
-    const seed = (current: Prefill | null): Prefill => ({
+    const seed = (scope: string) => (current: Prefill | null): Prefill => ({
       text: `@${handle} `,
       nonce: (current?.nonce ?? 0) + 1,
+      scope,
     });
-    if (inThread) setThreadPrefill(seed);
-    else setPrefill(seed);
-  }, []);
+    if (inThread && threadRoot) setThreadPrefill(seed(`thread:${threadRoot.id}`));
+    else setPrefill(seed(selectedChannelId));
+  }, [selectedChannelId, threadRoot]);
 
   const openThread = useCallback(async (message: Message) => {
     setThreadRoot(message);
@@ -1665,13 +1668,14 @@ export function TeamAgentsApp() {
                   )}
                 </div>
                 <Composer
+                  key={selectedChannel.id}
                   channel={selectedChannel}
                   locale={locale}
                   rosterUsers={rosterUsers}
                   rosterAgents={rosterAgents}
                   ownAgents={ownAgentsOutsideChannel}
                   onAgentAdded={onAgentAdded}
-                  prefill={prefill}
+                  prefill={prefill?.scope === selectedChannel.id ? prefill : null}
                   onSent={(message) => {
                     // Sending is an explicit intent to be at the bottom.
                     stickToBottom.current = true;
@@ -1735,6 +1739,7 @@ export function TeamAgentsApp() {
             ))}
           </div>
           <Composer
+            key={`thread:${threadRoot.id}`}
             channel={selectedChannel}
             locale={locale}
             rosterUsers={rosterUsers}
@@ -1742,7 +1747,7 @@ export function TeamAgentsApp() {
             ownAgents={ownAgentsOutsideChannel}
             onAgentAdded={onAgentAdded}
             threadRootId={threadRoot.id}
-            prefill={threadPrefill}
+            prefill={threadPrefill?.scope === `thread:${threadRoot.id}` ? threadPrefill : null}
             onSent={(message) => setThreadMessages((current) => upsertMessage(current, message))}
           />
         </aside>
@@ -2398,7 +2403,8 @@ function Composer(props: {
     if (!value.trim() || sending) return;
     setSending(true);
     setError("");
-    const lower = value.toLowerCase();
+    const draft = value;
+    const lower = draft.toLowerCase();
     // Ordered by where each handle appears: a relay hands off in the order the
     // sender wrote them, so the server must receive that order, not roster order.
     const agentMentions = rosterAgents
@@ -2412,6 +2418,10 @@ function Composer(props: {
         .filter((user) => mentionPosition(lower, user.username) >= 0)
         .map((user) => ({ kind: "user" as const, id: user.id })),
     ];
+    // The box empties the moment send is pressed — the round trip should not
+    // hold the draft hostage. On failure the draft comes back, unless the
+    // sender has already started typing something new.
+    setValue("");
     try {
       const data = await api<{ message: Message }>(
         `/api/channels/${encodeURIComponent(channel.id)}/messages`,
@@ -2419,7 +2429,7 @@ function Composer(props: {
           method: "POST",
           body: JSON.stringify({
             clientMessageId: crypto.randomUUID(),
-            content: value.trim(),
+            content: draft.trim(),
             ...(threadRootId ? { threadRootId } : {}),
             mentions,
             ...(agentMentions.length > 1 ? { agentMode } : {}),
@@ -2427,8 +2437,8 @@ function Composer(props: {
         },
       );
       onSent(data.message);
-      setValue("");
     } catch (cause) {
+      setValue((current) => (current.trim() ? current : draft));
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setSending(false);
@@ -3635,6 +3645,25 @@ function AccountModal(props: {
   );
 }
 
+/** Flip one reaction locally. Applying it twice restores the original list,
+ *  which is what makes it double as its own rollback. */
+function toggleReaction(message: Message, emoji: string): Message {
+  const existing = message.reactions.find((reaction) => reaction.emoji === emoji);
+  let reactions: Message["reactions"];
+  if (!existing) {
+    reactions = [...message.reactions, { emoji, count: 1, reacted: true }];
+  } else if (existing.reacted) {
+    reactions = existing.count <= 1
+      ? message.reactions.filter((reaction) => reaction.emoji !== emoji)
+      : message.reactions.map((reaction) =>
+          reaction.emoji === emoji ? { ...reaction, count: reaction.count - 1, reacted: false } : reaction);
+  } else {
+    reactions = message.reactions.map((reaction) =>
+      reaction.emoji === emoji ? { ...reaction, count: reaction.count + 1, reacted: true } : reaction);
+  }
+  return { ...message, reactions };
+}
+
 async function reactToMessage(
   messageId: number,
   emoji: string,
@@ -3642,6 +3671,11 @@ async function reactToMessage(
   setMessages: React.Dispatch<React.SetStateAction<Message[]>>,
   setError: React.Dispatch<React.SetStateAction<string>>,
 ) {
+  // The count moves under the pointer immediately; the server response then
+  // reconciles it (other people's reactions may have landed meanwhile).
+  const flip = (current: Message[]) =>
+    current.map((message) => (message.id === messageId ? toggleReaction(message, emoji) : message));
+  setMessages(flip);
   try {
     const data = await api<{ message: Message }>(`/api/messages/${messageId}/reactions`, {
       method: "POST",
@@ -3651,6 +3685,7 @@ async function reactToMessage(
       setMessages((current) => upsertMessage(current, data.message));
     }
   } catch (cause) {
+    setMessages(flip);
     setError(cause instanceof Error ? cause.message : String(cause));
   }
 }

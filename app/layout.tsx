@@ -58,11 +58,13 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  // The font variables must live on <html>: the composite `font:` tokens in
+  // globals.css resolve their var(--font-inter) references at :root, so a
+  // body-level variable leaves them guaranteed-invalid and every
+  // `font: var(--text-*)` rule silently falls back to the UA default.
   return (
-    <html lang="zh-CN">
-      <body
-        className={`${inter.variable} ${geistMono.variable} antialiased`}
-      >
+    <html lang="zh-CN" className={`${inter.variable} ${geistMono.variable}`}>
+      <body className="antialiased">
         {children}
       </body>
     </html>

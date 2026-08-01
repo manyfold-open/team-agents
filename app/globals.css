@@ -41,10 +41,22 @@
   --lavender-line: #ece0f1;
   --lavender-deep: #f2e6f7;
   --lavender-edge: #ddc9e6;
+  /* Interactive boundaries need >=3:1 against the canvas (WCAG 1.4.11);
+     these are desaturated steps of --primary, not new hues. */
+  --control-line: #9e8fa6;
+  --card-line: #d9d0dc;
+  --agent-accent: #9c6b9d;
   --cream-line: #e7dbcc;
   --error-soft: #fdf1ec;
   --error-line: #f2d3c6;
+  --error-soft-hover: #fbe7de;
   --success-soft: #e6f4ef;
+  --success-line: #bfe0d4;
+  /* Run outcomes on the aubergine surface — tints of the two semantic
+     colours (and the palette cream for input-required), light enough to read
+     on --surface-aubergine. */
+  --on-aubergine-success: #99cabd;
+  --on-aubergine-error: #e8aa96;
   --ink-soft: #f6f4f7;
   --on-aubergine-dim: rgb(217 189 222 / 70%);
   --on-aubergine-hover: rgb(255 255 255 / 8%);
@@ -268,16 +280,17 @@ button:disabled {
   box-shadow: none;
 }
 
-/* Secondary is the soft lavender pill — a gentler echo of the primary */
+/* Secondary is the soft lavender pill — a gentler echo of the primary. The
+   ring is --control-line so the pill still reads as a control on white. */
 .secondary-button {
   color: var(--primary);
   background: var(--canvas-lavender);
-  box-shadow: inset 0 0 0 1px var(--lavender-line);
+  box-shadow: inset 0 0 0 1px var(--control-line);
 }
 
 .secondary-button:hover:not(:disabled) {
   background: var(--lavender-deep);
-  box-shadow: inset 0 0 0 1px var(--lavender-edge);
+  box-shadow: inset 0 0 0 1px var(--control-line);
 }
 
 .secondary-button.danger-text {
@@ -360,7 +373,7 @@ button:disabled {
 }
 
 .logout-button:hover {
-  background: #fbe7de;
+  background: var(--error-soft-hover);
 }
 
 /* ==========================================================================
@@ -392,7 +405,7 @@ button:disabled {
   min-height: var(--field-h);
   padding: 6px 10px;
   color: var(--ink);
-  border: 1px solid var(--hairline);
+  border: 1px solid var(--control-line);
   border-radius: var(--r-sm);
   outline: 0;
   background: var(--canvas);
@@ -488,7 +501,7 @@ button:disabled {
   display: flex;
   align-items: center;
   overflow: hidden;
-  border: 1px solid var(--hairline);
+  border: 1px solid var(--control-line);
   border-radius: var(--r-sm);
   background: var(--canvas);
   transition:
@@ -571,7 +584,7 @@ button:disabled {
 
 .form-success {
   color: var(--semantic-success);
-  border: 1px solid #bfe0d4;
+  border: 1px solid var(--success-line);
   background: var(--success-soft);
 }
 
@@ -1268,7 +1281,7 @@ button:disabled {
   font: var(--text-button-cap);
   font-size: 11.5px;
   letter-spacing: var(--track-button-cap);
-  box-shadow: inset 0 0 0 1px var(--lavender-line);
+  box-shadow: inset 0 0 0 1px var(--control-line);
   transition:
     background var(--motion),
     box-shadow var(--motion);
@@ -1319,7 +1332,7 @@ button:disabled {
   padding: var(--s-sm) 0 6px;
   overflow-y: auto;
   overscroll-behavior: contain;
-  scrollbar-color: #d9d0dc transparent;
+  scrollbar-color: var(--card-line) transparent;
 }
 
 /* Sits where the channel intro would be, so reaching the true start of a
@@ -1333,7 +1346,7 @@ button:disabled {
   justify-content: center;
   gap: 6px;
   color: var(--ink-mute);
-  border: 1px solid var(--hairline);
+  border: 1px solid var(--control-line);
   border-radius: var(--r-pill);
   background: var(--canvas);
   font: var(--text-caption);
@@ -1520,8 +1533,10 @@ button:disabled {
   background: var(--canvas-lavender);
 }
 
+/* Agent identity must read at rest, not only on hover — the humans-plus-
+   agents transcript is the product's core claim. */
 .message-card.from-agent {
-  border-left-color: var(--lavender-deep);
+  border-left-color: var(--agent-accent);
 }
 
 .message-card.from-agent:hover {
@@ -1565,12 +1580,12 @@ button:disabled {
 }
 
 .agent-badge {
-  padding: 1px 4px;
+  padding: 1px 5px;
   color: var(--primary);
   border-radius: var(--r-xs);
   background: var(--lavender-deep);
+  box-shadow: inset 0 0 0 1px var(--lavender-edge);
   font: var(--text-micro-cap);
-  font-size: 8px;
   font-style: normal;
   letter-spacing: var(--track-micro-cap);
 }
@@ -1611,7 +1626,7 @@ button:disabled {
   margin: 5px 0;
   padding: 9px 10px;
   overflow-x: auto;
-  border: 1px solid var(--hairline);
+  border: 1px solid var(--card-line);
   border-radius: var(--r-md);
   background: var(--ink-soft);
 }
@@ -1620,6 +1635,7 @@ button:disabled {
   padding: 1px 4px;
   border-radius: var(--r-xs);
   background: var(--ink-soft);
+  box-shadow: inset 0 0 0 1px var(--card-line);
   font-family: var(--font-mono);
   font-size: 0.88em;
 }
@@ -1627,6 +1643,7 @@ button:disabled {
 .message-content pre code {
   padding: 0;
   background: transparent;
+  box-shadow: none;
 }
 
 .message-content a {
@@ -1726,7 +1743,7 @@ button:disabled {
   color: var(--ink-mute);
   border-radius: var(--r-pill);
   background: var(--canvas);
-  box-shadow: inset 0 0 0 1px var(--hairline);
+  box-shadow: inset 0 0 0 1px var(--control-line);
   font-size: 11px;
   transition:
     background var(--motion),
@@ -1832,7 +1849,7 @@ button:disabled {
 .composer {
   position: relative;
   margin: 4px var(--gutter) var(--s-md);
-  border: 1px solid var(--hairline);
+  border: 1px solid var(--control-line);
   border-radius: var(--r-md);
   background: var(--canvas);
   transition:
@@ -2333,7 +2350,7 @@ button:disabled {
 }
 
 .connect-result-row.failed svg {
-  color: var(--danger, #b3261e);
+  color: var(--semantic-error);
 }
 
 .connect-warn {
@@ -2391,7 +2408,7 @@ button:disabled {
   grid-template-columns: var(--avatar) minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--s-sm);
-  border: 1px solid var(--hairline);
+  border: 1px solid var(--card-line);
   border-radius: var(--r-md);
   background: var(--canvas);
 }
@@ -2516,6 +2533,25 @@ button:disabled {
     height: 34px;
   }
 
+  /* No hover on touch — the action row was permanently pinned under every
+     message instead, which doubled each row's height. Now a tap on the
+     message discloses it inline (tap-focus or the synthetic first-tap hover
+     both open it), and tapping elsewhere puts it away. */
+  .message-hover-actions {
+    position: static;
+    display: none;
+    width: max-content;
+    margin-top: 4px;
+    grid-column: 2;
+    background: var(--canvas-lavender);
+    box-shadow: none;
+  }
+
+  .message-card:focus-within .message-hover-actions,
+  .message-card:hover .message-hover-actions {
+    display: flex;
+  }
+
   .message-reactions > button,
   .message-status {
     min-height: 28px;
@@ -2635,15 +2671,6 @@ button:disabled {
     box-shadow: var(--elev-2);
   }
 
-  .message-hover-actions {
-    position: static;
-    display: flex;
-    width: max-content;
-    margin-top: 4px;
-    grid-column: 2;
-    background: var(--canvas-lavender);
-    box-shadow: none;
-  }
 }
 
 @media (max-width: 560px) {
@@ -2877,7 +2904,7 @@ button:disabled {
   color: var(--on-primary);
 }
 .run-tray-actions .danger-text:hover {
-  color: #ffb9a3;
+  color: var(--on-aubergine-error);
 }
 
 /* --- Run state chips ---------------------------------------------------- */
@@ -2899,13 +2926,13 @@ button:disabled {
   opacity: 0.75;
 }
 .run-status.run-completed {
-  color: #9be7cd;
+  color: var(--on-aubergine-success);
 }
 .run-status.run-failed {
-  color: #ffb9a3;
+  color: var(--on-aubergine-error);
 }
 .run-status.run-input-required {
-  color: #f3d9a8;
+  color: var(--canvas-cream);
 }
 
 /* The elapsed clock is tabular so a ticking second does not reflow the row. */
@@ -3187,7 +3214,7 @@ button:disabled {
   align-items: center;
   gap: var(--s-sm);
   color: var(--ink-mute);
-  border: 1px solid var(--hairline);
+  border: 1px solid var(--control-line);
   border-radius: var(--r-md);
   background: var(--canvas);
   transition: border-color var(--motion);
@@ -3426,8 +3453,25 @@ button:disabled {
   text-transform: uppercase;
 }
 
+/* .channel-filter is styled for the aubergine sidebar; this reuse sits on a
+   white modal, so every colour must flip back to the light surface. */
 .agent-filter {
   margin-top: var(--s-md);
+  color: var(--ink-mute);
+  border-color: var(--control-line);
+  background: var(--canvas);
+}
+
+.agent-filter:focus-within {
+  border-color: var(--primary-tint);
+}
+
+.agent-filter input {
+  color: var(--ink);
+}
+
+.agent-filter input::placeholder {
+  color: var(--ink-mute);
 }
 
 /* The avatar is also a direct-child span; without the guard it takes the
@@ -3469,4 +3513,84 @@ button:disabled {
 
 .confirm-strip > button {
   flex: 0 0 auto;
+}
+
+/* ==========================================================================
+   Feedback baseline — every control answers the keyboard and the pointer.
+   Focus is the DESIGN.md level-4 aubergine ring (as an outline so it can sit
+   on top of each control's own box-shadow); press deepens the surface one
+   step past hover. The aubergine sidebar flips the ring to white. Placed
+   last so it wins ties against per-component rules above.
+   ========================================================================== */
+
+:is(button, a, summary, [role="button"]):focus-visible {
+  outline: 2px solid var(--primary-press);
+  outline-offset: 1px;
+}
+
+.workspace-sidebar :is(button, a):focus-visible,
+.mobile-menu-button:focus-visible {
+  outline: 2px solid rgb(255 255 255 / 80%);
+  outline-offset: 1px;
+}
+
+/* The dialog card is only a programmatic focus entry point — the ring belongs
+   on the controls inside it, not around the whole card. */
+.modal-card:focus,
+.modal-card:focus-visible {
+  outline: 0;
+}
+
+/* Press states — one surface step past each family's hover */
+.primary-button:active:not(:disabled),
+.send-button:active:not(:disabled) {
+  background: var(--primary-deep);
+}
+
+.secondary-button:active:not(:disabled) {
+  background: var(--lavender-edge);
+}
+
+.icon-button:active:not(:disabled),
+.tiny-icon:active,
+.member-pill:active,
+.composer-mention-button:active,
+.message-hover-actions button:active,
+.message-reactions > button:active {
+  background: var(--lavender-deep);
+}
+
+.logout-button:active {
+  background: var(--error-line);
+}
+
+.nav-row:active,
+.channel-row:active:not(.active),
+.profile-button:active {
+  background: var(--on-aubergine-line);
+}
+
+.text-button:active,
+.link-button:active {
+  color: var(--link-hover);
+}
+
+/* Hover gaps — controls that transitioned but never changed */
+.agent-mode-switch {
+  box-shadow: inset 0 0 0 1px var(--card-line);
+}
+
+.agent-mode-switch button:hover:not(.active) {
+  color: var(--primary);
+}
+
+.search-filters button:hover:not(.active) {
+  color: var(--ink);
+  background: var(--lavender-deep);
+}
+
+.toast-body:hover strong {
+  color: var(--primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
